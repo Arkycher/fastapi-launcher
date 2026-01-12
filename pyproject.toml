@@ -89,3 +89,9 @@ exclude_lines = [
     "if not isUnix",
     "os\\.fork\\(",
 ]
+
+[dependency-groups]
+dev = [
+    "build>=1.4.0",
+    "twine>=6.2.0",
+]
