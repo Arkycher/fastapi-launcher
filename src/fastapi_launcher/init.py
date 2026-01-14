@@ -1,6 +1,5 @@
 """Configuration initialization module."""
 
-import os
 from pathlib import Path
 from typing import Optional
 
@@ -8,7 +7,7 @@ from loguru import logger
 
 
 # Default configuration template
-DEFAULT_CONFIG_TEMPLATE = '''
+DEFAULT_CONFIG_TEMPLATE = """
 [tool.fastapi-launcher]
 app = "main:app"
 host = "127.0.0.1"
@@ -38,10 +37,10 @@ log_level = "warning"
 # host = "0.0.0.0"
 # workers = 2
 # log_level = "debug"
-'''
+"""
 
 # .env template
-ENV_TEMPLATE = '''# FastAPI Launcher Environment Configuration
+ENV_TEMPLATE = """# FastAPI Launcher Environment Configuration
 # See https://github.com/fastapi-launcher/fastapi-launcher for more info
 
 # Environment mode (dev/prod/staging/qa)
@@ -70,21 +69,21 @@ ENV_TEMPLATE = '''# FastAPI Launcher Environment Configuration
 # Runtime
 # FA_RUNTIME_DIR=runtime
 # FA_HEALTH_PATH=/health
-'''
+"""
 
 
 def hasFastAPILauncherConfig(pyprojectPath: Path) -> bool:
     """Check if pyproject.toml has [tool.fastapi-launcher] section.
-    
+
     Args:
         pyprojectPath: Path to pyproject.toml
-    
+
     Returns:
         True if the section exists
     """
     if not pyprojectPath.exists():
         return False
-    
+
     try:
         content = pyprojectPath.read_text()
         return "[tool.fastapi-launcher]" in content
@@ -98,25 +97,25 @@ def initConfig(
     generateEnv: bool = False,
 ) -> tuple[bool, str]:
     """Initialize FastAPI Launcher configuration in a project.
-    
+
     Args:
         projectDir: Project directory (defaults to current directory)
         force: Force overwrite existing configuration
         generateEnv: Also generate .env.example file
-    
+
     Returns:
         Tuple of (success, message)
     """
     if projectDir is None:
         projectDir = Path.cwd()
-    
+
     pyprojectPath = projectDir / "pyproject.toml"
-    
+
     # Check if pyproject.toml exists
     if not pyprojectPath.exists():
         logger.warning(f"pyproject.toml not found at {projectDir}")
         return False, "pyproject.toml not found. Create it first or run 'pip init'."
-    
+
     # Check for existing configuration
     if hasFastAPILauncherConfig(pyprojectPath):
         if not force:
@@ -126,53 +125,59 @@ def initConfig(
                 "Use --force to overwrite."
             )
         logger.info("Force overwriting existing configuration | path={}", pyprojectPath)
-    
+
     # Read existing content
     try:
         existingContent = pyprojectPath.read_text()
     except Exception as e:
         logger.error(f"Failed to read pyproject.toml | error={e}")
         return False, f"Failed to read pyproject.toml: {e}"
-    
+
     # Remove existing [tool.fastapi-launcher] section if force
     if force and "[tool.fastapi-launcher]" in existingContent:
         lines = existingContent.split("\n")
         newLines = []
         skipSection = False
-        
+
         for line in lines:
             # Check if we're entering the fastapi-launcher section
             if line.strip().startswith("[tool.fastapi-launcher"):
                 skipSection = True
                 continue
             # Check if we're entering a new section (end of fastapi-launcher)
-            if skipSection and line.strip().startswith("[") and "fastapi-launcher" not in line:
+            if (
+                skipSection
+                and line.strip().startswith("[")
+                and "fastapi-launcher" not in line
+            ):
                 skipSection = False
-            
+
             if not skipSection:
                 newLines.append(line)
-        
+
         existingContent = "\n".join(newLines)
         # Clean up excessive newlines
         while "\n\n\n" in existingContent:
             existingContent = existingContent.replace("\n\n\n", "\n\n")
-    
+
     # Append configuration
-    newContent = existingContent.rstrip() + "\n" + DEFAULT_CONFIG_TEMPLATE.strip() + "\n"
-    
+    newContent = (
+        existingContent.rstrip() + "\n" + DEFAULT_CONFIG_TEMPLATE.strip() + "\n"
+    )
+
     try:
         pyprojectPath.write_text(newContent)
         logger.info("Configuration added to pyproject.toml | path={}", pyprojectPath)
     except Exception as e:
         logger.error(f"Failed to write pyproject.toml | error={e}")
         return False, f"Failed to write pyproject.toml: {e}"
-    
+
     # Generate .env.example if requested
     envMessage = ""
     if generateEnv:
         envSuccess, envMsg = generateEnvTemplate(projectDir, force)
         envMessage = f"\n{envMsg}"
-    
+
     return True, f"Configuration added to pyproject.toml{envMessage}"
 
 
@@ -181,28 +186,28 @@ def generateEnvTemplate(
     force: bool = False,
 ) -> tuple[bool, str]:
     """Generate .env.example file.
-    
+
     Args:
         projectDir: Project directory (defaults to current directory)
         force: Force overwrite existing file
-    
+
     Returns:
         Tuple of (success, message)
     """
     if projectDir is None:
         projectDir = Path.cwd()
-    
+
     envExamplePath = projectDir / ".env.example"
-    
+
     # Check for existing file
     if envExamplePath.exists() and not force:
         logger.info(".env.example already exists | path={}", envExamplePath)
         return False, ".env.example already exists. Use --force to overwrite."
-    
+
     try:
         envExamplePath.write_text(ENV_TEMPLATE.strip() + "\n")
         logger.info("Generated .env.example | path={}", envExamplePath)
-        return True, f"Generated .env.example"
+        return True, "Generated .env.example"
     except Exception as e:
         logger.error(f"Failed to write .env.example | error={e}")
         return False, f"Failed to write .env.example: {e}"

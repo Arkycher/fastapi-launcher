@@ -39,21 +39,25 @@ METHOD_COLORS = {
 
 def printStartupPanel(config: LauncherConfig) -> None:
     """Print startup information panel."""
-    modeText = "[cyan]Development[/]" if config.mode == RunMode.DEV else "[yellow]Production[/]"
-    
+    modeText = (
+        "[cyan]Development[/]"
+        if config.mode == RunMode.DEV
+        else "[yellow]Production[/]"
+    )
+
     content = Text()
     content.append("FastAPI Launcher\n", style="bold cyan")
     content.append(f"\nMode: {modeText}\n")
-    content.append(f"App: ", style="dim")
+    content.append("App: ", style="dim")
     content.append(f"{config.app or 'auto-discover'}\n", style="cyan")
-    content.append(f"URL: ", style="dim")
+    content.append("URL: ", style="dim")
     content.append(f"http://{config.host}:{config.port}\n", style="bold green")
-    
+
     if config.mode == RunMode.DEV and config.reload:
         content.append("\n✓ Auto-reload enabled", style="dim green")
     elif config.mode == RunMode.PROD:
         content.append(f"\n⚡ Workers: {config.workers}", style="dim yellow")
-    
+
     panel = Panel(
         content,
         title="[bold]🚀 Starting Server[/]",
@@ -75,19 +79,26 @@ def printStatusTable(
         header_style="bold cyan",
         border_style="dim",
     )
-    
+
     table.add_column("Property", style="dim")
     table.add_column("Value")
-    
+
     # Status indicator
     isRunning = status.get("running", False)
-    statusText = Text("● Running", style="bold green") if isRunning else Text("○ Stopped", style="dim red")
+    statusText = (
+        Text("● Running", style="bold green")
+        if isRunning
+        else Text("○ Stopped", style="dim red")
+    )
     table.add_row("Status", statusText)
-    
+
     if isRunning:
         table.add_row("PID", str(status.get("pid", "N/A")))
-        table.add_row("URL", f"http://{status.get('host', '127.0.0.1')}:{status.get('port', 8000)}")
-        
+        table.add_row(
+            "URL",
+            f"http://{status.get('host', '127.0.0.1')}:{status.get('port', 8000)}",
+        )
+
         if processInfo:
             if processInfo.get("uptime"):
                 table.add_row("Uptime", _formatUptime(processInfo["uptime"]))
@@ -95,12 +106,12 @@ def printStatusTable(
                 table.add_row("Memory", f"{processInfo['memory_mb']:.1f} MB")
             if processInfo.get("cpu_percent") is not None:
                 table.add_row("CPU", f"{processInfo['cpu_percent']:.1f}%")
-        
+
         if workerStatuses:
             table.add_row("Workers", str(len(workerStatuses)))
-    
+
     console.print(table)
-    
+
     # Print worker status table if available
     if workerStatuses:
         printWorkerStatusTable(workerStatuses)
@@ -111,20 +122,20 @@ def printWorkerStatusTable(workerStatuses: list) -> None:
     if not workerStatuses:
         console.print("[dim]No worker processes found[/dim]")
         return
-    
+
     table = Table(
         title="Worker Status",
         show_header=True,
         header_style="bold cyan",
         border_style="dim",
     )
-    
+
     table.add_column("PID", style="dim", justify="right")
     table.add_column("Status")
     table.add_column("CPU %", justify="right")
     table.add_column("Memory", justify="right")
     table.add_column("Uptime")
-    
+
     for worker in workerStatuses:
         # Status indicator
         if worker.status == "running":
@@ -133,10 +144,10 @@ def printWorkerStatusTable(workerStatuses: list) -> None:
             statusText = Text("○ idle", style="dim")
         else:
             statusText = Text(f"◐ {worker.status}", style="yellow")
-        
+
         # Format uptime
         uptimeStr = _formatUptime(worker.uptime) if worker.uptime else "N/A"
-        
+
         table.add_row(
             str(worker.pid),
             statusText,
@@ -144,18 +155,18 @@ def printWorkerStatusTable(workerStatuses: list) -> None:
             f"{worker.memoryMb:.1f} MB",
             uptimeStr,
         )
-    
+
     console.print(table)
 
 
 def _formatUptime(uptime: timedelta) -> str:
     """Format uptime duration."""
     totalSeconds = int(uptime.total_seconds())
-    
+
     days, remainder = divmod(totalSeconds, 86400)
     hours, remainder = divmod(remainder, 3600)
     minutes, seconds = divmod(remainder, 60)
-    
+
     parts = []
     if days > 0:
         parts.append(f"{days}d")
@@ -164,20 +175,22 @@ def _formatUptime(uptime: timedelta) -> str:
     if minutes > 0:
         parts.append(f"{minutes}m")
     parts.append(f"{seconds}s")
-    
+
     return " ".join(parts)
 
 
-def printErrorPanel(title: str, message: str, suggestions: Optional[list[str]] = None) -> None:
+def printErrorPanel(
+    title: str, message: str, suggestions: Optional[list[str]] = None
+) -> None:
     """Print an error panel with optional suggestions."""
     content = Text()
     content.append(message, style="red")
-    
+
     if suggestions:
         content.append("\n\nSuggestions:", style="bold yellow")
         for suggestion in suggestions:
             content.append(f"\n  • {suggestion}", style="yellow")
-    
+
     panel = Panel(
         content,
         title=f"[bold red]❌ {title}[/]",
@@ -225,11 +238,11 @@ def printConfigTable(config: dict[str, Any], title: str = "Configuration") -> No
         header_style="bold cyan",
         border_style="dim",
     )
-    
+
     table.add_column("Key", style="cyan")
     table.add_column("Value")
     table.add_column("Source", style="dim")
-    
+
     for key, value in config.items():
         if isinstance(value, bool):
             valueStr = "[green]true[/]" if value else "[red]false[/]"
@@ -237,9 +250,9 @@ def printConfigTable(config: dict[str, Any], title: str = "Configuration") -> No
             valueStr = "[dim]not set[/]"
         else:
             valueStr = str(value)
-        
+
         table.add_row(key, valueStr, "")
-    
+
     console.print(table)
 
 
@@ -264,7 +277,9 @@ def colorizeStatusCode(code: int) -> str:
     return f"[{color}]{code}[/]"
 
 
-def printHealthStatus(healthy: bool, url: str, responseTime: Optional[float] = None) -> None:
+def printHealthStatus(
+    healthy: bool, url: str, responseTime: Optional[float] = None
+) -> None:
     """Print health check status."""
     if healthy:
         status = Text("● Healthy", style="bold green")
@@ -275,13 +290,15 @@ def printHealthStatus(healthy: bool, url: str, responseTime: Optional[float] = N
         console.print(f"{status} {url}")
 
 
-def printPortConflict(port: int, processName: Optional[str], pid: Optional[int]) -> None:
+def printPortConflict(
+    port: int, processName: Optional[str], pid: Optional[int]
+) -> None:
     """Print port conflict information."""
     printErrorPanel(
         "Port Already in Use",
         f"Port {port} is already in use.",
         suggestions=[
-            f"Kill the process: fa stop --force" if pid else None,
+            "Kill the process: fa stop --force" if pid else None,
             f"Use a different port: fa dev --port {port + 1}",
             f"Process: {processName} (PID: {pid})" if processName and pid else None,
         ],
@@ -300,7 +317,7 @@ def printAccessLogEntry(
     statusStr = colorizeStatusCode(statusCode)
     timeColor = "red" if isSlow else "dim"
     slowMarker = " [bold red][SLOW][/]" if isSlow else ""
-    
+
     console.print(
         f"{methodStr} {path:40} {statusStr} [{timeColor}]{responseTime:.3f}s[/]{slowMarker}"
     )

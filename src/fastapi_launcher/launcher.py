@@ -1,6 +1,5 @@
 """Core launcher for uvicorn server."""
 
-import os
 import sys
 from pathlib import Path
 from typing import Optional
@@ -10,16 +9,14 @@ import uvicorn
 from .config import loadConfig
 from .discover import discoverApp, validateAppPath
 from .enums import RunMode, ServerBackend
-from .port import getPortInfo, isPortInUse, waitForPort
+from .port import getPortInfo, isPortInUse
 from .process import registerSignalHandlers, writePidFile
 from .schemas import LauncherConfig
 from .ui import (
-    console,
     printErrorPanel,
     printInfoMessage,
     printPortConflict,
     printStartupPanel,
-    printSuccessMessage,
 )
 
 
@@ -35,16 +32,16 @@ def buildUvicornConfig(
 ) -> uvicorn.Config:
     """
     Build uvicorn.Config from LauncherConfig.
-    
+
     Args:
         appPath: App import path (e.g., 'main:app')
         config: Launcher configuration
-    
+
     Returns:
         Configured uvicorn.Config
     """
     kwargs = config.toUvicornKwargs()
-    
+
     return uvicorn.Config(
         app=appPath,
         **kwargs,
@@ -54,13 +51,13 @@ def buildUvicornConfig(
 def preLaunchChecks(config: LauncherConfig) -> str:
     """
     Perform pre-launch checks.
-    
+
     Args:
         config: Launcher configuration
-    
+
     Returns:
         Resolved app path
-    
+
     Raises:
         LaunchError: If checks fail
     """
@@ -69,11 +66,11 @@ def preLaunchChecks(config: LauncherConfig) -> str:
         portInfo = getPortInfo(config.port)
         printPortConflict(config.port, portInfo.processName, portInfo.pid)
         raise LaunchError(f"Port {config.port} is already in use")
-    
+
     # Resolve app path
     appPath = config.app
     projectDir = config.appDir or Path.cwd()
-    
+
     if appPath is None:
         appPath = discoverApp(projectDir)
         if appPath is None:
@@ -88,7 +85,7 @@ def preLaunchChecks(config: LauncherConfig) -> str:
             )
             raise LaunchError("Could not discover FastAPI app")
         printInfoMessage(f"Auto-discovered app: {appPath}")
-    
+
     # Validate app path
     if not validateAppPath(appPath, projectDir):
         printErrorPanel(
@@ -101,7 +98,7 @@ def preLaunchChecks(config: LauncherConfig) -> str:
             ],
         )
         raise LaunchError(f"Cannot validate app path: {appPath}")
-    
+
     return appPath
 
 
@@ -114,19 +111,18 @@ def launch(
 ) -> None:
     """
     Launch FastAPI server with uvicorn or gunicorn.
-    
+
     Args:
         config: Pre-built configuration (if None, will load from sources)
         cliArgs: CLI arguments to merge into config
         mode: Override run mode
         showBanner: Whether to show startup banner
         envName: Named environment from pyproject.toml (e.g., 'staging', 'qa')
-    
+
     Raises:
         LaunchError: If launch fails
     """
-    from .enums import ServerBackend
-    
+
     # Load configuration if not provided
     if config is None:
         try:
@@ -139,47 +135,45 @@ def launch(
         except ValueError as e:
             printErrorPanel("Configuration Error", str(e))
             raise LaunchError(str(e)) from e
-    
+
     # Apply mode override
     if mode is not None:
         config = LauncherConfig(
             **{**config.model_dump(by_alias=False), "mode": mode}
         ).getEffectiveConfig()
-    
+
     # Apply dev mode defaults
     if config.mode == RunMode.DEV and not config.reload:
-        config = LauncherConfig(
-            **{**config.model_dump(by_alias=False), "reload": True}
-        )
-    
+        config = LauncherConfig(**{**config.model_dump(by_alias=False), "reload": True})
+
     # Pre-launch checks
     appPath = preLaunchChecks(config)
-    
+
     # Setup runtime directory
     runtimeDir = config.runtimeDir
     if not runtimeDir.is_absolute():
         runtimeDir = Path.cwd() / runtimeDir
     runtimeDir.mkdir(parents=True, exist_ok=True)
-    
+
     # Write PID file
     pidFile = runtimeDir / "fa.pid"
     writePidFile(pidFile)
-    
+
     # Add project directory to path
     projectDir = config.appDir or Path.cwd()
     projectDirStr = str(projectDir)
     if projectDirStr not in sys.path:
         sys.path.insert(0, projectDirStr)
-    
+
     # Register signal handlers
     registerSignalHandlers()
-    
+
     # Show startup banner
     if showBanner:
         printStartupPanel(
             LauncherConfig(**{**config.model_dump(by_alias=False), "app": appPath})
         )
-    
+
     # Run server based on backend
     try:
         if config.server == ServerBackend.GUNICORN:
@@ -205,7 +199,7 @@ def _runUvicorn(appPath: str, config: LauncherConfig, pidFile: Path) -> None:
 def _runGunicorn(appPath: str, config: LauncherConfig, pidFile: Path) -> None:
     """Run server with Gunicorn backend."""
     import sys
-    
+
     # Check if Gunicorn is available
     try:
         from gunicorn.app.base import BaseApplication
@@ -219,7 +213,7 @@ def _runGunicorn(appPath: str, config: LauncherConfig, pidFile: Path) -> None:
             ],
         )
         raise LaunchError("Gunicorn is not installed")
-    
+
     # Check platform
     if sys.platform == "win32":
         printErrorPanel(
@@ -231,26 +225,26 @@ def _runGunicorn(appPath: str, config: LauncherConfig, pidFile: Path) -> None:
             ],
         )
         raise LaunchError("Gunicorn is not supported on Windows")
-    
+
     class GunicornApp(BaseApplication):
         """Gunicorn application wrapper."""
-        
+
         def __init__(self, app: str, options: dict):
             self.options = options
             self.application = app
             super().__init__()
-        
+
         def load_config(self):
             for key, value in self.options.items():
                 if key in self.cfg.settings and value is not None:
                     self.cfg.set(key.lower(), value)
-        
+
         def load(self):
             return self.application
-    
+
     # Build Gunicorn options
     options = config.toGunicornConfig()
-    
+
     # Run Gunicorn
     gunicornApp = GunicornApp(appPath, options)
     gunicornApp.run()
@@ -265,7 +259,7 @@ def launchDev(
 ) -> None:
     """
     Launch in development mode.
-    
+
     Args:
         app: App import path
         host: Bind host
@@ -280,7 +274,7 @@ def launchDev(
         "reload": reload,
         "reload_dirs": reloadDirs,
     }
-    
+
     launch(cliArgs=cliArgs, mode=RunMode.DEV)
 
 
@@ -293,7 +287,7 @@ def launchProd(
 ) -> None:
     """
     Launch in production mode.
-    
+
     Args:
         app: App import path
         host: Bind host
@@ -308,9 +302,10 @@ def launchProd(
         "workers": workers,
         "daemon": daemon,
     }
-    
+
     if daemon:
         from .daemon import daemonize
+
         daemonize()
-    
+
     launch(cliArgs=cliArgs, mode=RunMode.PROD)

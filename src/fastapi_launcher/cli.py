@@ -5,13 +5,12 @@ from pathlib import Path
 from typing import Optional
 
 import typer
-from rich.console import Console
 
 from . import __version__
 from .checker import printCheckReport, runAllChecks, showConfig
 from .config import loadConfig
 from .daemon import checkDaemonSupport, daemonize, setupDaemonLogging
-from .enums import LogFormat, RunMode
+from .enums import RunMode
 from .health import checkHealth, printHealthResult
 from .launcher import LaunchError, launch
 from .logs import cleanLogs, getLogFiles, printLogEntry, readLogFile
@@ -28,7 +27,6 @@ from .ui import (
     createSpinner,
     printErrorMessage,
     printInfoMessage,
-    printStartupPanel,
     printStatusTable,
     printSuccessMessage,
     printWarningMessage,
@@ -112,7 +110,7 @@ def dev(
     reloadDirsList = None
     if reload_dirs:
         reloadDirsList = [d.strip() for d in reload_dirs.split(",")]
-    
+
     cliArgs = {
         "app": app_path,
         "host": host,
@@ -121,7 +119,7 @@ def dev(
         "reload_dirs": reloadDirsList,
         "log_level": log_level,
     }
-    
+
     try:
         launch(cliArgs=cliArgs, mode=RunMode.DEV, envName=env)
     except LaunchError:
@@ -193,16 +191,18 @@ def start(
 ) -> None:
     """Start production server."""
     from .enums import ServerBackend
-    
+
     # Parse server backend
     serverBackend = None
     if server:
         try:
             serverBackend = ServerBackend(server.lower())
         except ValueError:
-            printErrorMessage(f"Invalid server backend: {server}. Use 'uvicorn' or 'gunicorn'")
+            printErrorMessage(
+                f"Invalid server backend: {server}. Use 'uvicorn' or 'gunicorn'"
+            )
             raise typer.Exit(1)
-    
+
     cliArgs = {
         "app": app_path,
         "host": host,
@@ -214,7 +214,7 @@ def start(
         "timeout_graceful_shutdown": timeout_graceful_shutdown,
         "max_requests": max_requests,
     }
-    
+
     if daemon_mode:
         supported, msg = checkDaemonSupport()
         if not supported:
@@ -225,15 +225,17 @@ def start(
             runtimeDir = config.runtimeDir
             if not runtimeDir.is_absolute():
                 runtimeDir = Path.cwd() / runtimeDir
-            
+
             logFile = setupDaemonLogging(runtimeDir)
             pidFile = runtimeDir / "fa.pid"
-            
+
             printInfoMessage(f"Starting daemon... (PID file: {pidFile})")
             daemonize(pidFile=pidFile, logFile=logFile, workDir=Path.cwd())
-    
+
     try:
-        launch(cliArgs=cliArgs, mode=RunMode.PROD, showBanner=not daemon_mode, envName=env)
+        launch(
+            cliArgs=cliArgs, mode=RunMode.PROD, showBanner=not daemon_mode, envName=env
+        )
     except LaunchError:
         raise typer.Exit(1)
     except KeyboardInterrupt:
@@ -260,30 +262,30 @@ def stop(
     runtimeDir = config.runtimeDir
     if not runtimeDir.is_absolute():
         runtimeDir = Path.cwd() / runtimeDir
-    
+
     pidFile = runtimeDir / "fa.pid"
     pid = readPidFile(pidFile)
-    
+
     if pid is None:
         printWarningMessage("No PID file found. Server may not be running.")
         raise typer.Exit(1)
-    
+
     if not isProcessRunning(pid):
         printWarningMessage(f"Process {pid} is not running. Cleaning up PID file.")
         removePidFile(pidFile)
         raise typer.Exit(0)
-    
+
     printInfoMessage(f"Stopping server (PID: {pid})...")
-    
+
     with createSpinner("Stopping...") as progress:
         progress.add_task("Stopping server...", total=None)
-        
+
         if terminateProcess(pid, timeout=timeout):
             removePidFile(pidFile)
-            
+
             # Wait for port to be free
             waitForPortFree(config.port, timeout=5.0)
-            
+
     printSuccessMessage("Server stopped successfully")
 
 
@@ -301,16 +303,16 @@ def restart(
     runtimeDir = config.runtimeDir
     if not runtimeDir.is_absolute():
         runtimeDir = Path.cwd() / runtimeDir
-    
+
     pidFile = runtimeDir / "fa.pid"
     pid = readPidFile(pidFile)
-    
+
     wasDaemon = False
-    
+
     if pid and isProcessRunning(pid):
         printInfoMessage("Stopping current server...")
         wasDaemon = True  # Assume daemon if PID file exists
-        
+
         if terminateProcess(pid, timeout=timeout):
             removePidFile(pidFile)
             waitForPortFree(config.port, timeout=5.0)
@@ -318,15 +320,15 @@ def restart(
         else:
             printErrorMessage("Failed to stop server")
             raise typer.Exit(1)
-    
+
     # Start in the same mode
     printInfoMessage("Starting server...")
-    
+
     if wasDaemon:
         # Re-daemonize
         logFile = setupDaemonLogging(runtimeDir)
         daemonize(pidFile=pidFile, logFile=logFile, workDir=Path.cwd())
-    
+
     try:
         launch(mode=config.mode, showBanner=True)
     except LaunchError:
@@ -343,38 +345,38 @@ def status(
     ),
 ) -> None:
     """Show server status."""
-    from .process import getMasterAndWorkerStatus, getWorkerStatuses
-    
+    from .process import getWorkerStatuses
+
     config = loadConfig()
     runtimeDir = config.runtimeDir
     if not runtimeDir.is_absolute():
         runtimeDir = Path.cwd() / runtimeDir
-    
+
     pidFile = runtimeDir / "fa.pid"
     pid = readPidFile(pidFile)
-    
+
     statusInfo = {
         "running": False,
         "pid": None,
         "host": config.host,
         "port": config.port,
     }
-    
+
     processInfo = None
     workerStatuses = None
-    
+
     if pid:
         processStatus = getProcessStatus(pid)
         statusInfo["running"] = processStatus.isRunning
         statusInfo["pid"] = pid
-        
+
         if processStatus.isRunning:
             processInfo = {
                 "uptime": processStatus.uptime,
                 "memory_mb": processStatus.memoryMb,
                 "cpu_percent": processStatus.cpuPercent,
             }
-            
+
             # Get worker statuses if verbose
             if verbose:
                 workerStatuses = getWorkerStatuses(pid)
@@ -383,11 +385,11 @@ def status(
         portInfo = getPortInfo(config.port)
         statusInfo["running"] = True
         statusInfo["pid"] = portInfo.pid
-        
+
         # Try to get worker statuses if verbose
         if verbose and portInfo.pid:
             workerStatuses = getWorkerStatuses(portInfo.pid)
-    
+
     printStatusTable(statusInfo, processInfo, workerStatuses)
 
 
@@ -417,20 +419,20 @@ def logs(
     runtimeDir = config.runtimeDir
     if not runtimeDir.is_absolute():
         runtimeDir = Path.cwd() / runtimeDir
-    
+
     logFiles = getLogFiles(runtimeDir)
-    
+
     if log_type not in logFiles:
         printErrorMessage(f"Unknown log type: {log_type}")
         printInfoMessage(f"Available types: {', '.join(logFiles.keys())}")
         raise typer.Exit(1)
-    
+
     logFile = logFiles[log_type]
-    
+
     if not logFile.exists():
         printWarningMessage(f"Log file not found: {logFile}")
         raise typer.Exit(0)
-    
+
     try:
         for line in readLogFile(logFile, lines=lines, follow=follow):
             printLogEntry(line, config.logFormat)
@@ -466,22 +468,22 @@ def health(
 ) -> None:
     """Check server health."""
     config = loadConfig()
-    
+
     checkHost = host or config.host
     checkPort = port or config.port
     checkPath = path or config.healthPath
-    
+
     url = f"http://{checkHost}:{checkPort}{checkPath}"
-    
+
     result = checkHealth(
         host=checkHost,
         port=checkPort,
         path=checkPath,
         timeout=timeout,
     )
-    
+
     printHealthResult(result, url)
-    
+
     if not result.healthy:
         if result.error:
             printErrorMessage(result.error)
@@ -499,7 +501,7 @@ def check() -> None:
     """Check configuration and dependencies."""
     report = runAllChecks()
     printCheckReport(report)
-    
+
     if not report.allPassed:
         raise typer.Exit(1)
 
@@ -524,24 +526,24 @@ def clean(
     runtimeDir = config.runtimeDir
     if not runtimeDir.is_absolute():
         runtimeDir = Path.cwd() / runtimeDir
-    
+
     if not runtimeDir.exists():
         printInfoMessage("Runtime directory does not exist. Nothing to clean.")
         raise typer.Exit(0)
-    
+
     if not confirm:
         confirmClean = typer.confirm("Are you sure you want to clean runtime files?")
         if not confirmClean:
             raise typer.Exit(0)
-    
+
     cleanedCount = 0
-    
+
     # Clean logs
     logsCount = cleanLogs(runtimeDir)
     cleanedCount += logsCount
     if logsCount > 0:
         printSuccessMessage(f"Cleaned {logsCount} log file(s)")
-    
+
     if not logs_only:
         # Clean PID file
         pidFile = runtimeDir / "fa.pid"
@@ -549,12 +551,14 @@ def clean(
             # Check if process is running
             pid = readPidFile(pidFile)
             if pid and isProcessRunning(pid):
-                printWarningMessage(f"Server is still running (PID: {pid}). Stop it first.")
+                printWarningMessage(
+                    f"Server is still running (PID: {pid}). Stop it first."
+                )
             else:
                 pidFile.unlink()
                 cleanedCount += 1
                 printSuccessMessage("Cleaned PID file")
-    
+
     if cleanedCount == 0:
         printInfoMessage("Nothing to clean")
     else:
@@ -578,13 +582,13 @@ def initCmd(
 ) -> None:
     """Initialize FastAPI Launcher configuration in pyproject.toml."""
     from .init import initConfig
-    
+
     success, message = initConfig(
         projectDir=Path.cwd(),
         force=force,
         generateEnv=env,
     )
-    
+
     if success:
         printSuccessMessage(message)
     else:
@@ -617,20 +621,22 @@ def run(
 ) -> None:
     """Smart start - auto-detect dev/prod mode based on environment."""
     from .smartMode import detectEnvironment
-    
+
     detectedEnv, detectedMode = detectEnvironment()
-    
-    printInfoMessage(f"Detected environment: {detectedEnv} (mode: {detectedMode.value})")
-    
+
+    printInfoMessage(
+        f"Detected environment: {detectedEnv} (mode: {detectedMode.value})"
+    )
+
     cliArgs = {
         "app": app_path,
         "host": host,
         "port": port,
     }
-    
+
     # Use detected environment if it's a named env
     envName = detectedEnv if detectedEnv not in ("dev", "prod") else None
-    
+
     try:
         launch(cliArgs=cliArgs, mode=detectedMode, envName=envName)
     except LaunchError:
@@ -643,33 +649,33 @@ def run(
 def reload() -> None:
     """Trigger hot reload on running server (dev mode only)."""
     import signal
-    import sys
-    
+
     # Check platform
     if sys.platform == "win32":
         printWarningMessage("Reload command is not supported on Windows")
         raise typer.Exit(1)
-    
+
     config = loadConfig()
     runtimeDir = config.runtimeDir
     if not runtimeDir.is_absolute():
         runtimeDir = Path.cwd() / runtimeDir
-    
+
     pidFile = runtimeDir / "fa.pid"
     pid = readPidFile(pidFile)
-    
+
     if pid is None:
         printErrorMessage("No server is running (PID file not found)")
         raise typer.Exit(1)
-    
+
     if not isProcessRunning(pid):
         printErrorMessage(f"Server process {pid} is not running")
         removePidFile(pidFile)
         raise typer.Exit(1)
-    
+
     # Send SIGHUP signal
     try:
         from .process import sendSignal
+
         if sendSignal(pid, signal.SIGHUP):
             printSuccessMessage(f"Reload triggered (sent SIGHUP to PID {pid})")
         else:
@@ -696,19 +702,21 @@ def monitor(
 ) -> None:
     """Real-time monitor for server status (requires textual for TUI)."""
     from .monitor import checkTextualInstalled, runMonitorSimple, runMonitorTui
-    
+
     # Check if server is running first
     config = loadConfig()
     runtimeDir = config.runtimeDir
     if not runtimeDir.is_absolute():
         runtimeDir = Path.cwd() / runtimeDir
-    
+
     pidFile = runtimeDir / "fa.pid"
     pid = readPidFile(pidFile)
-    
+
     if pid is None or not isProcessRunning(pid):
-        printWarningMessage("Server is not running. Start the server first with 'fa start' or 'fa dev'.")
-    
+        printWarningMessage(
+            "Server is not running. Start the server first with 'fa start' or 'fa dev'."
+        )
+
     if no_tui:
         runMonitorSimple(refreshInterval=refresh)
     else:

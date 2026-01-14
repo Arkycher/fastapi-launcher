@@ -20,15 +20,15 @@ def daemonize(
 ) -> None:
     """
     Daemonize the current process using double fork.
-    
+
     This is a Unix-only operation. On Windows, this will print a warning
     and continue running in foreground.
-    
+
     Args:
         pidFile: Path to write PID file (optional)
         logFile: Path for stdout/stderr redirect (optional)
         workDir: Working directory for daemon (optional)
-    
+
     Raises:
         OSError: If fork fails
     """
@@ -38,7 +38,7 @@ def daemonize(
             "Consider using NSSM (nssm.cc) for Windows service management."
         )
         return
-    
+
     # First fork - create child process
     try:
         pid = os.fork()
@@ -48,12 +48,12 @@ def daemonize(
     except OSError as e:
         printErrorMessage(f"First fork failed: {e}")
         sys.exit(1)
-    
+
     # Decouple from parent environment
     os.chdir(workDir or "/")
     os.setsid()  # Create new session
     os.umask(0o022)  # Set file creation mask
-    
+
     # Second fork - ensure daemon cannot acquire a controlling terminal
     try:
         pid = os.fork()
@@ -63,12 +63,12 @@ def daemonize(
     except OSError as e:
         printErrorMessage(f"Second fork failed: {e}")
         sys.exit(1)
-    
+
     # Now running as daemon
-    
+
     # Redirect standard file descriptors
     _redirectStdStreams(logFile)
-    
+
     # Write PID file if specified
     if pidFile:
         pidFile.parent.mkdir(parents=True, exist_ok=True)
@@ -78,18 +78,18 @@ def daemonize(
 def _redirectStdStreams(logFile: Optional[Path] = None) -> None:
     """
     Redirect stdin, stdout, stderr to /dev/null or log file.
-    
+
     Args:
         logFile: Path for stdout/stderr redirect
     """
     # Close all open file descriptors
     sys.stdout.flush()
     sys.stderr.flush()
-    
+
     # Open /dev/null for stdin
     devNull = open("/dev/null", "r")
     os.dup2(devNull.fileno(), sys.stdin.fileno())
-    
+
     # Open log file or /dev/null for stdout/stderr
     if logFile:
         logFile.parent.mkdir(parents=True, exist_ok=True)
@@ -105,16 +105,16 @@ def _redirectStdStreams(logFile: Optional[Path] = None) -> None:
 def setupDaemonLogging(runtimeDir: Path) -> Path:
     """
     Setup logging directory for daemon mode.
-    
+
     Args:
         runtimeDir: Runtime directory path
-    
+
     Returns:
         Path to log file
     """
     logsDir = runtimeDir / "logs"
     logsDir.mkdir(parents=True, exist_ok=True)
-    
+
     logFile = logsDir / "fa.log"
     return logFile
 
@@ -122,7 +122,7 @@ def setupDaemonLogging(runtimeDir: Path) -> Path:
 def checkDaemonSupport() -> tuple[bool, str]:
     """
     Check if daemon mode is supported on this platform.
-    
+
     Returns:
         Tuple of (supported, message)
     """
