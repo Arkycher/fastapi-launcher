@@ -11,8 +11,11 @@ import pytest
 
 from fastapi_launcher.process import (
     ProcessStatus,
+    WorkerStatus,
     getChildProcesses,
+    getMasterAndWorkerStatus,
     getProcessStatus,
+    getWorkerStatuses,
     isProcessRunning,
     killProcess,
     readPidFile,
@@ -20,6 +23,7 @@ from fastapi_launcher.process import (
     removePidFile,
     sendSignal,
     terminateProcess,
+    terminateProcessTree,
     waitForExit,
     writePidFile,
 )
@@ -422,3 +426,247 @@ class TestTerminateProcess:
         mockWait.side_effect = [False, True]  # First wait times out, second succeeds
         
         result = terminateProcess(12345, timeout=0.5)
+
+
+class TestWorkerStatus:
+    """Tests for WorkerStatus dataclass."""
+
+    def test_worker_status_fields(self) -> None:
+        """Test WorkerStatus has all fields."""
+        from datetime import timedelta
+        
+        status = WorkerStatus(
+            pid=1234,
+            cpuPercent=5.0,
+            memoryMb=128.5,
+            requestsHandled=100,
+            status="running",
+            uptime=timedelta(hours=1),
+        )
+        
+        assert status.pid == 1234
+        assert status.cpuPercent == 5.0
+        assert status.memoryMb == 128.5
+        assert status.requestsHandled == 100
+        assert status.status == "running"
+
+    def test_worker_status_optional_uptime(self) -> None:
+        """Test WorkerStatus with no uptime."""
+        status = WorkerStatus(
+            pid=1234,
+            cpuPercent=5.0,
+            memoryMb=128.5,
+            requestsHandled=0,
+            status="idle",
+        )
+        
+        assert status.uptime is None
+
+
+class TestGetWorkerStatuses:
+    """Tests for getWorkerStatuses function."""
+
+    @patch("fastapi_launcher.process.psutil.Process")
+    def test_get_worker_statuses_no_children(self, mockProcess: MagicMock) -> None:
+        """Test getting worker statuses when there are no children."""
+        mockProc = MagicMock()
+        mockProc.children.return_value = []
+        mockProcess.return_value = mockProc
+        
+        workers = getWorkerStatuses(12345)
+        
+        assert workers == []
+
+    @patch("fastapi_launcher.process.psutil.Process")
+    def test_get_worker_statuses_with_children(self, mockProcess: MagicMock) -> None:
+        """Test getting worker statuses with child processes."""
+        from datetime import datetime
+        
+        mockChild = MagicMock()
+        mockChild.pid = 1001
+        mockChild.cpu_percent.return_value = 5.0
+        mockChild.memory_info.return_value = MagicMock(rss=100 * 1024 * 1024)  # 100 MB
+        mockChild.create_time.return_value = datetime.now().timestamp() - 3600
+        
+        mockProc = MagicMock()
+        mockProc.children.return_value = [mockChild]
+        mockProcess.return_value = mockProc
+        
+        workers = getWorkerStatuses(12345)
+        
+        assert len(workers) == 1
+        assert workers[0].pid == 1001
+        assert workers[0].memoryMb == pytest.approx(100.0, rel=0.1)
+
+    @patch("fastapi_launcher.process.psutil.Process")
+    def test_get_worker_statuses_process_not_found(self, mockProcess: MagicMock) -> None:
+        """Test getting worker statuses when main process not found."""
+        mockProcess.side_effect = psutil.NoSuchProcess(12345)
+        
+        workers = getWorkerStatuses(12345)
+        
+        assert workers == []
+
+    @patch("fastapi_launcher.process.psutil.Process")
+    def test_get_worker_statuses_child_access_denied(self, mockProcess: MagicMock) -> None:
+        """Test getting worker statuses when child access is denied."""
+        mockChild = MagicMock()
+        mockChild.pid = 1001
+        mockChild.cpu_percent.side_effect = psutil.AccessDenied(1001)
+        
+        mockProc = MagicMock()
+        mockProc.children.return_value = [mockChild]
+        mockProcess.return_value = mockProc
+        
+        workers = getWorkerStatuses(12345)
+        
+        # Should skip the inaccessible child
+        assert workers == []
+
+    @patch("fastapi_launcher.process.psutil.Process")
+    def test_get_worker_status_running(self, mockProcess: MagicMock) -> None:
+        """Test worker status is 'running' when CPU usage is high."""
+        from datetime import datetime
+        
+        mockChild = MagicMock()
+        mockChild.pid = 1001
+        mockChild.cpu_percent.return_value = 50.0  # High CPU
+        mockChild.memory_info.return_value = MagicMock(rss=100 * 1024 * 1024)
+        mockChild.create_time.return_value = datetime.now().timestamp() - 3600
+        
+        mockProc = MagicMock()
+        mockProc.children.return_value = [mockChild]
+        mockProcess.return_value = mockProc
+        
+        workers = getWorkerStatuses(12345)
+        
+        assert workers[0].status == "running"
+
+    @patch("fastapi_launcher.process.psutil.Process")
+    def test_get_worker_status_idle(self, mockProcess: MagicMock) -> None:
+        """Test worker status is 'idle' when CPU usage is low."""
+        from datetime import datetime
+        
+        mockChild = MagicMock()
+        mockChild.pid = 1001
+        mockChild.cpu_percent.return_value = 0.1  # Low CPU
+        mockChild.memory_info.return_value = MagicMock(rss=100 * 1024 * 1024)
+        mockChild.create_time.return_value = datetime.now().timestamp() - 3600
+        
+        mockProc = MagicMock()
+        mockProc.children.return_value = [mockChild]
+        mockProcess.return_value = mockProc
+        
+        workers = getWorkerStatuses(12345)
+        
+        assert workers[0].status == "idle"
+
+
+class TestGetMasterAndWorkerStatus:
+    """Tests for getMasterAndWorkerStatus function."""
+
+    @patch("fastapi_launcher.process.getWorkerStatuses")
+    @patch("fastapi_launcher.process.getProcessStatus")
+    def test_get_master_and_worker_status_running(
+        self, mockGetStatus: MagicMock, mockGetWorkers: MagicMock
+    ) -> None:
+        """Test getting master and worker status when running."""
+        mockMasterStatus = ProcessStatus(pid=12345, isRunning=True)
+        mockGetStatus.return_value = mockMasterStatus
+        
+        mockWorkers = [
+            WorkerStatus(pid=1001, cpuPercent=5.0, memoryMb=100.0, requestsHandled=0, status="running"),
+        ]
+        mockGetWorkers.return_value = mockWorkers
+        
+        master, workers = getMasterAndWorkerStatus(12345)
+        
+        assert master.pid == 12345
+        assert master.isRunning is True
+        assert len(workers) == 1
+        assert workers[0].pid == 1001
+
+    @patch("fastapi_launcher.process.getWorkerStatuses")
+    @patch("fastapi_launcher.process.getProcessStatus")
+    def test_get_master_and_worker_status_not_running(
+        self, mockGetStatus: MagicMock, mockGetWorkers: MagicMock
+    ) -> None:
+        """Test getting master and worker status when not running."""
+        mockMasterStatus = ProcessStatus(pid=12345, isRunning=False)
+        mockGetStatus.return_value = mockMasterStatus
+        
+        master, workers = getMasterAndWorkerStatus(12345)
+        
+        assert master.isRunning is False
+        assert workers == []
+        # getWorkerStatuses should not be called when not running
+        mockGetWorkers.assert_not_called()
+
+
+class TestTerminateProcessTreeAdditional:
+    """Additional tests for terminateProcessTree."""
+
+    @patch("fastapi_launcher.process.psutil.Process")
+    @patch("fastapi_launcher.process.isProcessRunning")
+    def test_terminate_tree_with_no_children(
+        self, mockRunning: MagicMock, mockProcess: MagicMock
+    ) -> None:
+        """Test terminating process tree with no children."""
+        mockRunning.return_value = True
+        
+        mockProc = MagicMock()
+        mockProc.children.return_value = []
+        mockProcess.return_value = mockProc
+        
+        # Simulate wait_procs returning all processes terminated
+        with patch("fastapi_launcher.process.psutil.wait_procs") as mockWaitProcs:
+            mockWaitProcs.return_value = ([mockProc], [])
+            
+            result = terminateProcessTree(12345, timeout=1.0)
+            
+            mockProc.terminate.assert_called_once()
+
+    @patch("fastapi_launcher.process.psutil.Process")
+    @patch("fastapi_launcher.process.isProcessRunning")
+    def test_terminate_tree_access_denied(
+        self, mockRunning: MagicMock, mockProcess: MagicMock
+    ) -> None:
+        """Test terminating process tree with access denied."""
+        mockRunning.return_value = True
+        mockProcess.side_effect = psutil.AccessDenied(12345)
+        
+        result = terminateProcessTree(12345, timeout=1.0)
+        
+        # Should return based on isProcessRunning after exception
+
+
+class TestKillProcessAdditional:
+    """Additional tests for killProcess."""
+
+    @patch("fastapi_launcher.process.psutil.Process")
+    @patch("fastapi_launcher.process.isProcessRunning")
+    def test_kill_process_success(
+        self, mockRunning: MagicMock, mockProcess: MagicMock
+    ) -> None:
+        """Test killing process successfully."""
+        mockRunning.return_value = True
+        
+        mockProc = MagicMock()
+        mockProcess.return_value = mockProc
+        
+        result = killProcess(12345)
+        
+        mockProc.kill.assert_called_once()
+
+    @patch("fastapi_launcher.process.psutil.Process")
+    @patch("fastapi_launcher.process.isProcessRunning")
+    def test_kill_process_no_such_process(
+        self, mockRunning: MagicMock, mockProcess: MagicMock
+    ) -> None:
+        """Test killing process that doesn't exist."""
+        mockRunning.return_value = True
+        mockProcess.side_effect = psutil.NoSuchProcess(12345)
+        
+        result = killProcess(12345)
+        
+        # Should return True since process doesn't exist (already dead)

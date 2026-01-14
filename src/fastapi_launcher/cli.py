@@ -101,6 +101,12 @@ def dev(
         "-l",
         help="Log level",
     ),
+    env: Optional[str] = typer.Option(
+        None,
+        "--env",
+        "-e",
+        help="Named environment from pyproject.toml (e.g., staging, qa)",
+    ),
 ) -> None:
     """Start development server with auto-reload."""
     reloadDirsList = None
@@ -117,7 +123,7 @@ def dev(
     }
     
     try:
-        launch(cliArgs=cliArgs, mode=RunMode.DEV)
+        launch(cliArgs=cliArgs, mode=RunMode.DEV, envName=env)
     except LaunchError:
         raise typer.Exit(1)
     except KeyboardInterrupt:
@@ -162,8 +168,41 @@ def start(
         "-l",
         help="Log level",
     ),
+    env: Optional[str] = typer.Option(
+        None,
+        "--env",
+        "-e",
+        help="Named environment from pyproject.toml (e.g., staging, prod)",
+    ),
+    server: Optional[str] = typer.Option(
+        None,
+        "--server",
+        "-s",
+        help="Server backend (uvicorn/gunicorn)",
+    ),
+    timeout_graceful_shutdown: Optional[int] = typer.Option(
+        None,
+        "--timeout-graceful-shutdown",
+        help="Graceful shutdown timeout in seconds",
+    ),
+    max_requests: Optional[int] = typer.Option(
+        None,
+        "--max-requests",
+        help="Max requests per worker before restart (Gunicorn only)",
+    ),
 ) -> None:
     """Start production server."""
+    from .enums import ServerBackend
+    
+    # Parse server backend
+    serverBackend = None
+    if server:
+        try:
+            serverBackend = ServerBackend(server.lower())
+        except ValueError:
+            printErrorMessage(f"Invalid server backend: {server}. Use 'uvicorn' or 'gunicorn'")
+            raise typer.Exit(1)
+    
     cliArgs = {
         "app": app_path,
         "host": host,
@@ -171,6 +210,9 @@ def start(
         "workers": workers,
         "daemon": daemon_mode,
         "log_level": log_level,
+        "server": serverBackend,
+        "timeout_graceful_shutdown": timeout_graceful_shutdown,
+        "max_requests": max_requests,
     }
     
     if daemon_mode:
@@ -179,7 +221,7 @@ def start(
             printWarningMessage(msg)
         else:
             # Setup logging before daemonizing
-            config = loadConfig(cliArgs=cliArgs)
+            config = loadConfig(cliArgs=cliArgs, envName=env)
             runtimeDir = config.runtimeDir
             if not runtimeDir.is_absolute():
                 runtimeDir = Path.cwd() / runtimeDir
@@ -191,7 +233,7 @@ def start(
             daemonize(pidFile=pidFile, logFile=logFile, workDir=Path.cwd())
     
     try:
-        launch(cliArgs=cliArgs, mode=RunMode.PROD, showBanner=not daemon_mode)
+        launch(cliArgs=cliArgs, mode=RunMode.PROD, showBanner=not daemon_mode, envName=env)
     except LaunchError:
         raise typer.Exit(1)
     except KeyboardInterrupt:
@@ -292,8 +334,17 @@ def restart(
 
 
 @app.command()
-def status() -> None:
+def status(
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help="Show detailed worker status",
+    ),
+) -> None:
     """Show server status."""
+    from .process import getMasterAndWorkerStatus, getWorkerStatuses
+    
     config = loadConfig()
     runtimeDir = config.runtimeDir
     if not runtimeDir.is_absolute():
@@ -310,6 +361,7 @@ def status() -> None:
     }
     
     processInfo = None
+    workerStatuses = None
     
     if pid:
         processStatus = getProcessStatus(pid)
@@ -322,13 +374,21 @@ def status() -> None:
                 "memory_mb": processStatus.memoryMb,
                 "cpu_percent": processStatus.cpuPercent,
             }
+            
+            # Get worker statuses if verbose
+            if verbose:
+                workerStatuses = getWorkerStatuses(pid)
     elif isPortInUse(config.port, config.host):
         # Server running but no PID file (started externally)
         portInfo = getPortInfo(config.port)
         statusInfo["running"] = True
         statusInfo["pid"] = portInfo.pid
+        
+        # Try to get worker statuses if verbose
+        if verbose and portInfo.pid:
+            workerStatuses = getWorkerStatuses(portInfo.pid)
     
-    printStatusTable(statusInfo, processInfo)
+    printStatusTable(statusInfo, processInfo, workerStatuses)
 
 
 @app.command()
@@ -499,6 +559,172 @@ def clean(
         printInfoMessage("Nothing to clean")
     else:
         printSuccessMessage(f"Cleaned {cleanedCount} file(s)")
+
+
+@app.command(name="init")
+def initCmd(
+    env: bool = typer.Option(
+        False,
+        "--env",
+        "-e",
+        help="Also generate .env.example template",
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        "-f",
+        help="Overwrite existing configuration",
+    ),
+) -> None:
+    """Initialize FastAPI Launcher configuration in pyproject.toml."""
+    from .init import initConfig
+    
+    success, message = initConfig(
+        projectDir=Path.cwd(),
+        force=force,
+        generateEnv=env,
+    )
+    
+    if success:
+        printSuccessMessage(message)
+    else:
+        printWarningMessage(message)
+        if not force and "already exists" in message:
+            raise typer.Exit(0)
+        raise typer.Exit(1)
+
+
+@app.command(name="run")
+def run(
+    app_path: Optional[str] = typer.Option(
+        None,
+        "--app",
+        "-a",
+        help="FastAPI app import path",
+    ),
+    host: Optional[str] = typer.Option(
+        None,
+        "--host",
+        "-h",
+        help="Bind host",
+    ),
+    port: Optional[int] = typer.Option(
+        None,
+        "--port",
+        "-p",
+        help="Bind port",
+    ),
+) -> None:
+    """Smart start - auto-detect dev/prod mode based on environment."""
+    from .smartMode import detectEnvironment
+    
+    detectedEnv, detectedMode = detectEnvironment()
+    
+    printInfoMessage(f"Detected environment: {detectedEnv} (mode: {detectedMode.value})")
+    
+    cliArgs = {
+        "app": app_path,
+        "host": host,
+        "port": port,
+    }
+    
+    # Use detected environment if it's a named env
+    envName = detectedEnv if detectedEnv not in ("dev", "prod") else None
+    
+    try:
+        launch(cliArgs=cliArgs, mode=detectedMode, envName=envName)
+    except LaunchError:
+        raise typer.Exit(1)
+    except KeyboardInterrupt:
+        printInfoMessage("Server stopped")
+
+
+@app.command()
+def reload() -> None:
+    """Trigger hot reload on running server (dev mode only)."""
+    import signal
+    import sys
+    
+    # Check platform
+    if sys.platform == "win32":
+        printWarningMessage("Reload command is not supported on Windows")
+        raise typer.Exit(1)
+    
+    config = loadConfig()
+    runtimeDir = config.runtimeDir
+    if not runtimeDir.is_absolute():
+        runtimeDir = Path.cwd() / runtimeDir
+    
+    pidFile = runtimeDir / "fa.pid"
+    pid = readPidFile(pidFile)
+    
+    if pid is None:
+        printErrorMessage("No server is running (PID file not found)")
+        raise typer.Exit(1)
+    
+    if not isProcessRunning(pid):
+        printErrorMessage(f"Server process {pid} is not running")
+        removePidFile(pidFile)
+        raise typer.Exit(1)
+    
+    # Send SIGHUP signal
+    try:
+        from .process import sendSignal
+        if sendSignal(pid, signal.SIGHUP):
+            printSuccessMessage(f"Reload triggered (sent SIGHUP to PID {pid})")
+        else:
+            printErrorMessage("Failed to send SIGHUP signal")
+            raise typer.Exit(1)
+    except Exception as e:
+        printErrorMessage(f"Failed to trigger reload: {e}")
+        raise typer.Exit(1)
+
+
+@app.command()
+def monitor(
+    no_tui: bool = typer.Option(
+        False,
+        "--no-tui",
+        help="Use simple CLI output instead of TUI",
+    ),
+    refresh: float = typer.Option(
+        1.0,
+        "--refresh",
+        "-r",
+        help="Refresh interval in seconds",
+    ),
+) -> None:
+    """Real-time monitor for server status (requires textual for TUI)."""
+    from .monitor import checkTextualInstalled, runMonitorSimple, runMonitorTui
+    
+    # Check if server is running first
+    config = loadConfig()
+    runtimeDir = config.runtimeDir
+    if not runtimeDir.is_absolute():
+        runtimeDir = Path.cwd() / runtimeDir
+    
+    pidFile = runtimeDir / "fa.pid"
+    pid = readPidFile(pidFile)
+    
+    if pid is None or not isProcessRunning(pid):
+        printWarningMessage("Server is not running. Start the server first with 'fa start' or 'fa dev'.")
+    
+    if no_tui:
+        runMonitorSimple(refreshInterval=refresh)
+    else:
+        if not checkTextualInstalled():
+            printWarningMessage(
+                "Textual is not installed. Using simple CLI output.\n"
+                "For TUI mode, install with: pip install fastapi-launcher[monitor]"
+            )
+            runMonitorSimple(refreshInterval=refresh)
+        else:
+            try:
+                runMonitorTui()
+            except Exception as e:
+                printErrorMessage(f"TUI failed: {e}")
+                printInfoMessage("Falling back to simple CLI output...")
+                runMonitorSimple(refreshInterval=refresh)
 
 
 if __name__ == "__main__":

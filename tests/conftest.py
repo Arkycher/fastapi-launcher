@@ -66,20 +66,30 @@ FA_RELOAD=true
 
 @pytest.fixture
 def cleanEnv() -> Generator[None, None, None]:
-    """Clean up FA_ prefixed environment variables."""
-    originalEnv = {k: v for k, v in os.environ.items() if k.startswith("FA_")}
+    """Clean up FA_ prefixed and environment detection variables."""
+    # Variables to clean
+    envPrefixes = ("FA_",)
+    envVars = ("PYTHON_ENV", "NODE_ENV")
     
-    # Remove all FA_ variables
+    # Save original values
+    originalEnv = {}
+    for k, v in os.environ.items():
+        if k.startswith(envPrefixes) or k in envVars:
+            originalEnv[k] = v
+    
+    # Remove all target variables
     for key in list(os.environ.keys()):
-        if key.startswith("FA_"):
+        if key.startswith(envPrefixes) or key in envVars:
             del os.environ[key]
     
     yield
     
-    # Restore original variables
+    # Clean up any variables set during test
     for key in list(os.environ.keys()):
-        if key.startswith("FA_"):
+        if key.startswith(envPrefixes) or key in envVars:
             del os.environ[key]
+    
+    # Restore original variables
     os.environ.update(originalEnv)
 
 

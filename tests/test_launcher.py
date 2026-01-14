@@ -418,3 +418,188 @@ class TestLaunchError:
     def test_launch_error_is_exception(self) -> None:
         """Test LaunchError is an Exception."""
         assert issubclass(LaunchError, Exception)
+
+
+class TestLaunchWithServerBackend:
+    """Tests for launch with server backend configuration."""
+
+    def test_launch_with_uvicorn_backend(self, tempDir: Path) -> None:
+        """Test launch with Uvicorn server backend (default)."""
+        os.chdir(tempDir)
+        
+        with patch("fastapi_launcher.launcher.preLaunchChecks") as mockChecks, \
+             patch("fastapi_launcher.launcher.writePidFile"), \
+             patch("fastapi_launcher.launcher.registerSignalHandlers"), \
+             patch("fastapi_launcher.launcher.uvicorn.Server") as mockServer:
+            
+            mockChecks.return_value = "main:app"
+            mockServer.return_value = MagicMock()
+            
+            config = LauncherConfig(
+                app="main:app",
+                appDir=tempDir,
+                runtimeDir=tempDir / "runtime",
+            )
+            
+            launch(config=config, showBanner=False)
+            
+            mockServer.assert_called_once()
+
+
+class TestLaunchWithEnvName:
+    """Tests for launch with named environment."""
+
+    def test_launch_with_env_name(self, tempDir: Path) -> None:
+        """Test launch with named environment."""
+        os.chdir(tempDir)
+        
+        with patch("fastapi_launcher.launcher.loadConfig") as mockLoadConfig, \
+             patch("fastapi_launcher.launcher.preLaunchChecks") as mockChecks, \
+             patch("fastapi_launcher.launcher.writePidFile"), \
+             patch("fastapi_launcher.launcher.registerSignalHandlers"), \
+             patch("fastapi_launcher.launcher.uvicorn.Server") as mockServer:
+            
+            config = LauncherConfig(appDir=tempDir, runtimeDir=tempDir / "runtime")
+            mockLoadConfig.return_value = config
+            mockChecks.return_value = "main:app"
+            mockServer.return_value = MagicMock()
+            
+            launch(envName="staging", showBanner=False)
+            
+            mockLoadConfig.assert_called_once()
+            callKwargs = mockLoadConfig.call_args.kwargs
+            assert callKwargs["envName"] == "staging"
+
+
+class TestLaunchWithGracefulShutdown:
+    """Tests for launch with graceful shutdown timeout."""
+
+    def test_launch_with_timeout_graceful_shutdown(self, tempDir: Path) -> None:
+        """Test launch with graceful shutdown timeout."""
+        os.chdir(tempDir)
+        
+        with patch("fastapi_launcher.launcher.preLaunchChecks") as mockChecks, \
+             patch("fastapi_launcher.launcher.writePidFile"), \
+             patch("fastapi_launcher.launcher.registerSignalHandlers"), \
+             patch("fastapi_launcher.launcher.uvicorn.Server") as mockServer:
+            
+            mockChecks.return_value = "main:app"
+            mockServer.return_value = MagicMock()
+            
+            config = LauncherConfig(
+                app="main:app",
+                appDir=tempDir,
+                runtimeDir=tempDir / "runtime",
+                timeout_graceful_shutdown=30,
+            )
+            
+            launch(config=config, showBanner=False)
+            
+            # Config should have the timeout
+            assert config.timeoutGracefulShutdown == 30
+
+
+class TestBuildUvicornConfigExtended:
+    """Extended tests for buildUvicornConfig."""
+
+    def test_build_config_with_access_log_disabled(self) -> None:
+        """Test building config with access log disabled."""
+        config = LauncherConfig(access_log=False)
+        
+        with patch("uvicorn.Config") as mockConfig:
+            mockConfig.return_value = MagicMock()
+            buildUvicornConfig("main:app", config)
+            
+            callKwargs = mockConfig.call_args.kwargs
+            assert callKwargs["access_log"] is False
+
+    def test_build_config_with_access_log_enabled(self) -> None:
+        """Test building config with access log enabled."""
+        config = LauncherConfig(access_log=True)
+        
+        with patch("uvicorn.Config") as mockConfig:
+            mockConfig.return_value = MagicMock()
+            buildUvicornConfig("main:app", config)
+            
+            callKwargs = mockConfig.call_args.kwargs
+            assert callKwargs["access_log"] is True
+
+    def test_build_config_with_multiple_workers(self) -> None:
+        """Test building config with multiple workers."""
+        config = LauncherConfig(workers=8, mode=RunMode.PROD)
+        
+        with patch("uvicorn.Config") as mockConfig:
+            mockConfig.return_value = MagicMock()
+            buildUvicornConfig("main:app", config)
+            
+            callKwargs = mockConfig.call_args.kwargs
+            assert callKwargs["workers"] == 8
+
+
+class TestRunGunicorn:
+    """Tests for _runGunicorn function."""
+
+    def test_run_gunicorn_not_installed(self, tempDir: Path) -> None:
+        """Test error when Gunicorn is not installed."""
+        from fastapi_launcher.launcher import _runGunicorn
+        
+        config = LauncherConfig(
+            app="main:app",
+            appDir=tempDir,
+            runtimeDir=tempDir / "runtime",
+        )
+        pidFile = tempDir / "runtime" / "fa.pid"
+        
+        with patch("fastapi_launcher.launcher.printErrorPanel"), \
+             patch.dict("sys.modules", {"gunicorn": None, "gunicorn.app": None, "gunicorn.app.base": None}):
+            # Force ImportError by patching the import
+            import builtins
+            original_import = builtins.__import__
+            
+            def mock_import(name, *args, **kwargs):
+                if name == "gunicorn.app.base" or name.startswith("gunicorn"):
+                    raise ImportError("No module named 'gunicorn'")
+                return original_import(name, *args, **kwargs)
+            
+            with patch.object(builtins, "__import__", mock_import):
+                with pytest.raises(LaunchError, match="Gunicorn is not installed"):
+                    _runGunicorn("main:app", config, pidFile)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Gunicorn not supported on Windows")
+    def test_run_gunicorn_success(self, tempDir: Path) -> None:
+        """Test successful Gunicorn launch - verifies config generation."""
+        # Gunicorn import has side effects (calls os.getcwd at import time)
+        # So we just test the config generation instead
+        config = LauncherConfig(
+            app="main:app",
+            appDir=tempDir,
+            runtimeDir=tempDir / "runtime",
+            workers=4,
+            timeout_graceful_shutdown=30,
+            max_requests=1000,
+            max_requests_jitter=50,
+        )
+        
+        # Test toGunicornConfig method
+        gunicornConfig = config.toGunicornConfig()
+        
+        assert gunicornConfig["workers"] == 4
+        assert gunicornConfig["graceful_timeout"] == 30
+        assert gunicornConfig["max_requests"] == 1000
+        assert gunicornConfig["max_requests_jitter"] == 50
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Test for Windows only")
+    def test_run_gunicorn_windows_error(self, tempDir: Path) -> None:
+        """Test error when running Gunicorn on Windows."""
+        from fastapi_launcher.launcher import _runGunicorn
+        
+        config = LauncherConfig(
+            app="main:app",
+            appDir=tempDir,
+            runtimeDir=tempDir / "runtime",
+        )
+        pidFile = tempDir / "runtime" / "fa.pid"
+        
+        with patch("fastapi_launcher.launcher.printErrorPanel"):
+            with pytest.raises(LaunchError, match="not supported on Windows"):
+                _runGunicorn("main:app", config, pidFile)

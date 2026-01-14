@@ -139,6 +139,72 @@ class TestLoadEnvConfig:
         assert "port" not in config
         assert "mode" not in config
 
+    def test_boolean_values(self, cleanEnv) -> None:
+        """Test boolean value parsing."""
+        os.environ["FA_RELOAD"] = "true"
+        os.environ["FA_DAEMON"] = "1"
+        os.environ["FA_ACCESS_LOG"] = "yes"
+        
+        config = loadEnvConfig()
+        
+        assert config["reload"] is True
+        assert config["daemon"] is True
+        assert config["access_log"] is True
+
+    def test_boolean_false_values(self, cleanEnv) -> None:
+        """Test boolean false value parsing."""
+        os.environ["FA_RELOAD"] = "false"
+        os.environ["FA_DAEMON"] = "0"
+        os.environ["FA_ACCESS_LOG"] = "no"
+        
+        config = loadEnvConfig()
+        
+        assert config["reload"] is False
+        assert config["daemon"] is False
+        assert config["access_log"] is False
+
+    def test_float_values(self, cleanEnv) -> None:
+        """Test float value parsing."""
+        os.environ["FA_SLOW_REQUEST_THRESHOLD"] = "1.5"
+        
+        config = loadEnvConfig()
+        
+        assert config["slow_request_threshold"] == 1.5
+
+    def test_invalid_float_ignored(self, cleanEnv) -> None:
+        """Test invalid float value is ignored."""
+        os.environ["FA_SLOW_REQUEST_THRESHOLD"] = "not_a_float"
+        
+        config = loadEnvConfig()
+        
+        assert "slow_request_threshold" not in config
+
+    def test_list_values(self, cleanEnv) -> None:
+        """Test list value parsing."""
+        os.environ["FA_RELOAD_DIRS"] = "src,lib,app"
+        
+        config = loadEnvConfig()
+        
+        assert config["reload_dirs"] == ["src", "lib", "app"]
+
+    def test_server_backend_parsing(self, cleanEnv) -> None:
+        """Test server backend parsing."""
+        from fastapi_launcher.enums import ServerBackend
+        
+        os.environ["FA_SERVER"] = "uvicorn"
+        
+        config = loadEnvConfig()
+        
+        assert config["server"] == ServerBackend.UVICORN
+
+    def test_invalid_server_backend_ignored(self, cleanEnv) -> None:
+        """Test invalid server backend is ignored."""
+        os.environ["FA_SERVER"] = "invalid_backend"
+        
+        config = loadEnvConfig()
+        
+        assert "server" not in config
+
 
 class TestMergeConfigs:
     """Tests for configuration merging."""
@@ -256,3 +322,223 @@ log_level = "debug"
         
         assert config.reload is True
         assert config.logLevel == "debug"
+
+
+class TestMultiEnvironmentConfig:
+    """Tests for multi-environment configuration."""
+
+    def test_load_named_environment(self, tempDir: Path, cleanEnv) -> None:
+        """Test loading a named environment configuration."""
+        pyprojectPath = tempDir / "pyproject.toml"
+        pyprojectPath.write_text("""
+[tool.fastapi-launcher]
+app = "main:app"
+host = "127.0.0.1"
+port = 8000
+workers = 1
+
+[tool.fastapi-launcher.envs.staging]
+host = "0.0.0.0"
+workers = 2
+log_level = "info"
+""")
+        
+        config = loadConfig(tempDir, envName="staging")
+        
+        assert config.host == "0.0.0.0"
+        assert config.workers == 2
+        assert config.logLevel == "info"
+        # Port should inherit from base
+        assert config.port == 8000
+
+    def test_environment_not_found(self, tempDir: Path, cleanEnv) -> None:
+        """Test error when named environment doesn't exist."""
+        pyprojectPath = tempDir / "pyproject.toml"
+        pyprojectPath.write_text("""
+[tool.fastapi-launcher]
+app = "main:app"
+
+[tool.fastapi-launcher.envs.staging]
+workers = 2
+""")
+        
+        with pytest.raises(ValueError) as exc_info:
+            loadConfig(tempDir, envName="nonexistent")
+        
+        assert "not found" in str(exc_info.value)
+
+    def test_no_envs_defined(self, tempDir: Path, cleanEnv) -> None:
+        """Test error when no envs defined but envName specified."""
+        pyprojectPath = tempDir / "pyproject.toml"
+        pyprojectPath.write_text("""
+[tool.fastapi-launcher]
+app = "main:app"
+""")
+        
+        with pytest.raises(ValueError) as exc_info:
+            loadConfig(tempDir, envName="staging")
+        
+        assert "not found" in str(exc_info.value)
+
+    def test_multiple_environments(self, tempDir: Path, cleanEnv) -> None:
+        """Test multiple environments configuration."""
+        pyprojectPath = tempDir / "pyproject.toml"
+        pyprojectPath.write_text("""
+[tool.fastapi-launcher]
+app = "main:app"
+port = 8000
+
+[tool.fastapi-launcher.envs.staging]
+host = "0.0.0.0"
+workers = 2
+
+[tool.fastapi-launcher.envs.qa]
+host = "0.0.0.0"
+workers = 1
+log_level = "debug"
+
+[tool.fastapi-launcher.envs.prod]
+host = "0.0.0.0"
+workers = 8
+log_level = "warning"
+""")
+        
+        staging = loadConfig(tempDir, envName="staging")
+        qa = loadConfig(tempDir, envName="qa")
+        prod = loadConfig(tempDir, envName="prod")
+        
+        assert staging.workers == 2
+        assert qa.workers == 1
+        assert qa.logLevel == "debug"
+        assert prod.workers == 8
+        assert prod.logLevel == "warning"
+
+
+class TestGracefulShutdownConfig:
+    """Tests for graceful shutdown configuration."""
+
+    def test_default_timeout(self, tempDir: Path, cleanEnv) -> None:
+        """Test default graceful shutdown timeout."""
+        config = loadConfig(tempDir)
+        
+        assert config.timeoutGracefulShutdown == 10
+
+    def test_timeout_from_pyproject(self, tempDir: Path, cleanEnv) -> None:
+        """Test timeout from pyproject.toml."""
+        pyprojectPath = tempDir / "pyproject.toml"
+        pyprojectPath.write_text("""
+[tool.fastapi-launcher]
+timeout_graceful_shutdown = 30
+""")
+        
+        config = loadConfig(tempDir)
+        
+        assert config.timeoutGracefulShutdown == 30
+
+    def test_timeout_from_env_var(self, tempDir: Path, cleanEnv) -> None:
+        """Test timeout from environment variable."""
+        os.environ["FA_TIMEOUT_GRACEFUL_SHUTDOWN"] = "60"
+        
+        config = loadConfig(tempDir)
+        
+        assert config.timeoutGracefulShutdown == 60
+
+    def test_timeout_cli_override(self, tempDir: Path, cleanEnv) -> None:
+        """Test timeout CLI override."""
+        pyprojectPath = tempDir / "pyproject.toml"
+        pyprojectPath.write_text("""
+[tool.fastapi-launcher]
+timeout_graceful_shutdown = 30
+""")
+        
+        config = loadConfig(
+            tempDir,
+            cliArgs={"timeout_graceful_shutdown": 10},
+        )
+        
+        assert config.timeoutGracefulShutdown == 10
+
+
+class TestServerBackendConfig:
+    """Tests for server backend configuration."""
+
+    def test_default_server_is_uvicorn(self, tempDir: Path, cleanEnv) -> None:
+        """Test default server backend is uvicorn."""
+        from fastapi_launcher.enums import ServerBackend
+        
+        config = loadConfig(tempDir)
+        
+        assert config.server == ServerBackend.UVICORN
+
+    def test_server_from_pyproject(self, tempDir: Path, cleanEnv) -> None:
+        """Test server backend from pyproject.toml."""
+        from fastapi_launcher.enums import ServerBackend
+        
+        pyprojectPath = tempDir / "pyproject.toml"
+        pyprojectPath.write_text("""
+[tool.fastapi-launcher]
+server = "gunicorn"
+""")
+        
+        config = loadConfig(tempDir)
+        
+        assert config.server == ServerBackend.GUNICORN
+
+    def test_server_from_env_var(self, tempDir: Path, cleanEnv) -> None:
+        """Test server backend from environment variable."""
+        from fastapi_launcher.enums import ServerBackend
+        
+        os.environ["FA_SERVER"] = "gunicorn"
+        
+        config = loadConfig(tempDir)
+        
+        assert config.server == ServerBackend.GUNICORN
+
+
+class TestGunicornConfig:
+    """Tests for Gunicorn-specific configuration."""
+
+    def test_max_requests_default(self, tempDir: Path, cleanEnv) -> None:
+        """Test default max_requests is 0 (disabled)."""
+        config = loadConfig(tempDir)
+        
+        assert config.maxRequests == 0
+
+    def test_max_requests_from_pyproject(self, tempDir: Path, cleanEnv) -> None:
+        """Test max_requests from pyproject.toml."""
+        pyprojectPath = tempDir / "pyproject.toml"
+        pyprojectPath.write_text("""
+[tool.fastapi-launcher]
+max_requests = 1000
+max_requests_jitter = 100
+""")
+        
+        config = loadConfig(tempDir)
+        
+        assert config.maxRequests == 1000
+        assert config.maxRequestsJitter == 100
+
+    def test_gunicorn_config_generation(self, tempDir: Path, cleanEnv) -> None:
+        """Test Gunicorn config generation."""
+        pyprojectPath = tempDir / "pyproject.toml"
+        pyprojectPath.write_text("""
+[tool.fastapi-launcher]
+host = "0.0.0.0"
+port = 8000
+workers = 4
+max_requests = 1000
+max_requests_jitter = 100
+log_level = "info"
+access_log = true
+timeout_graceful_shutdown = 30
+""")
+        
+        config = loadConfig(tempDir)
+        gunicornConfig = config.toGunicornConfig()
+        
+        assert gunicornConfig["bind"] == "0.0.0.0:8000"
+        assert gunicornConfig["workers"] == 4
+        assert gunicornConfig["max_requests"] == 1000
+        assert gunicornConfig["max_requests_jitter"] == 100
+        assert gunicornConfig["loglevel"] == "info"
+        assert gunicornConfig["graceful_timeout"] == 30

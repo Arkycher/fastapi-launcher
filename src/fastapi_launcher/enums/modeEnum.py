@@ -8,3 +8,10 @@ class RunMode(str, Enum):
 
     DEV = "dev"
     PROD = "prod"
+
+
+class ServerBackend(str, Enum):
+    """Server backend enumeration."""
+
+    UVICORN = "uvicorn"
+    GUNICORN = "gunicorn"

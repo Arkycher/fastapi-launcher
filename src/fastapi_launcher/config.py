@@ -7,15 +7,16 @@ from typing import Any, Optional
 from dotenv import dotenv_values
 from pydantic import ValidationError
 
-from .enums import LogFormat, RunMode
+from .enums import LogFormat, RunMode, ServerBackend
 from .schemas import LauncherConfig
 
 # Configuration priority (highest to lowest):
 # 1. CLI arguments
 # 2. Environment variables (FA_ prefix)
 # 3. .env file
-# 4. pyproject.toml [tool.fastapi-launcher]
-# 5. Default values
+# 4. pyproject.toml [tool.fastapi-launcher.envs.<name>] section (if --env specified)
+# 5. pyproject.toml [tool.fastapi-launcher]
+# 6. Default values
 
 
 def loadPyprojectConfig(projectDir: Path) -> dict[str, Any]:
@@ -80,6 +81,11 @@ def _parseEnvValues(values: dict[str, Any]) -> dict[str, Any]:
         "HEALTH_TIMEOUT": "health_timeout",
         "SLOW_REQUEST_THRESHOLD": "slow_request_threshold",
         "EXCLUDE_PATHS": "exclude_paths",
+        "SERVER": "server",
+        "TIMEOUT_GRACEFUL_SHUTDOWN": "timeout_graceful_shutdown",
+        "MAX_REQUESTS": "max_requests",
+        "MAX_REQUESTS_JITTER": "max_requests_jitter",
+        "WORKER_CLASS": "worker_class",
     }
     
     for envKey, value in values.items():
@@ -88,7 +94,8 @@ def _parseEnvValues(values: dict[str, Any]) -> dict[str, Any]:
             continue
         
         # Type conversion
-        if configKey in ("port", "workers", "health_timeout"):
+        if configKey in ("port", "workers", "health_timeout", "timeout_graceful_shutdown", 
+                         "max_requests", "max_requests_jitter"):
             try:
                 result[configKey] = int(value)
             except (ValueError, TypeError):
@@ -115,6 +122,11 @@ def _parseEnvValues(values: dict[str, Any]) -> dict[str, Any]:
                 result[configKey] = LogFormat(value.lower())
             except ValueError:
                 pass
+        elif configKey == "server":
+            try:
+                result[configKey] = ServerBackend(value.lower())
+            except ValueError:
+                pass
         else:
             result[configKey] = value
     
@@ -137,6 +149,7 @@ def loadConfig(
     projectDir: Optional[Path] = None,
     cliArgs: Optional[dict[str, Any]] = None,
     mode: Optional[RunMode] = None,
+    envName: Optional[str] = None,
 ) -> LauncherConfig:
     """
     Load and merge configuration from all sources.
@@ -145,8 +158,21 @@ def loadConfig(
     1. CLI arguments
     2. Environment variables (FA_ prefix)
     3. .env file
-    4. pyproject.toml [tool.fastapi-launcher]
-    5. Default values
+    4. pyproject.toml [tool.fastapi-launcher.envs.<name>] section (if envName specified)
+    5. pyproject.toml [tool.fastapi-launcher]
+    6. Default values
+    
+    Args:
+        projectDir: Project directory to load configuration from
+        cliArgs: CLI arguments to merge into config
+        mode: Override run mode
+        envName: Named environment to use (e.g., 'staging', 'qa')
+    
+    Returns:
+        Merged LauncherConfig with environment-specific overrides applied
+    
+    Raises:
+        ValueError: If configuration is invalid or environment not found
     """
     if projectDir is None:
         projectDir = Path.cwd()
@@ -154,7 +180,7 @@ def loadConfig(
     # Load from all sources
     pyprojectConfig = loadPyprojectConfig(projectDir)
     dotenvConfig = loadDotenvConfig(projectDir)
-    envConfig = loadEnvConfig()
+    osEnvConfig = loadEnvConfig()
     
     # Filter out None values from CLI args
     cliConfig = {k: v for k, v in (cliArgs or {}).items() if v is not None}
@@ -163,7 +189,7 @@ def loadConfig(
     mergedConfig = mergeConfigs(
         pyprojectConfig,
         dotenvConfig,
-        envConfig,
+        osEnvConfig,
         cliConfig,
     )
     
@@ -177,9 +203,41 @@ def loadConfig(
     
     try:
         config = LauncherConfig(**mergedConfig)
-        return config.getEffectiveConfig()
+        
+        # Validate named environment exists if specified
+        if envName and config.envs:
+            if envName not in config.envs:
+                availableEnvs = list(config.envs.keys())
+                raise ValueError(
+                    f"Environment '{envName}' not found in configuration. "
+                    f"Available environments: {availableEnvs}"
+                )
+        elif envName and not config.envs:
+            raise ValueError(
+                f"Environment '{envName}' not found. "
+                "No environments defined in [tool.fastapi-launcher.envs]"
+            )
+        
+        return config.getEffectiveConfig(envName=envName)
     except ValidationError as e:
         raise ValueError(f"Invalid configuration: {e}") from e
+
+
+def getAvailableEnvs(projectDir: Optional[Path] = None) -> list[str]:
+    """Get list of available named environments.
+    
+    Args:
+        projectDir: Project directory to load configuration from
+    
+    Returns:
+        List of environment names
+    """
+    if projectDir is None:
+        projectDir = Path.cwd()
+    
+    pyprojectConfig = loadPyprojectConfig(projectDir)
+    envs = pyprojectConfig.get("envs", {})
+    return list(envs.keys())
 
 
 def getConfigSummary(config: LauncherConfig) -> dict[str, Any]:
@@ -189,6 +247,7 @@ def getConfigSummary(config: LauncherConfig) -> dict[str, Any]:
         "host": config.host,
         "port": config.port,
         "mode": config.mode.value,
+        "server": config.server.value,
         "reload": config.reload,
         "workers": config.workers,
         "daemon": config.daemon,
@@ -197,4 +256,6 @@ def getConfigSummary(config: LauncherConfig) -> dict[str, Any]:
         "access_log": config.accessLog,
         "runtime_dir": str(config.runtimeDir),
         "health_path": config.healthPath,
+        "timeout_graceful_shutdown": config.timeoutGracefulShutdown,
+        "max_requests": config.maxRequests,
     }

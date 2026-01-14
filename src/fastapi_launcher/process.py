@@ -319,3 +319,84 @@ def registerSignalHandlers(
         signal.signal(signal.SIGTERM, onTerminate or defaultHandler)
     
     signal.signal(signal.SIGINT, onInterrupt or defaultHandler)
+
+
+@dataclass
+class WorkerStatus:
+    """Worker process status information."""
+
+    pid: int
+    cpuPercent: float
+    memoryMb: float
+    requestsHandled: int  # Not always available
+    status: str  # running/idle/starting
+    uptime: Optional[timedelta] = None
+
+
+def getWorkerStatuses(mainPid: int) -> list[WorkerStatus]:
+    """
+    Get status information for all worker processes.
+    
+    Args:
+        mainPid: Main/master process ID
+    
+    Returns:
+        List of WorkerStatus for each worker
+    """
+    workers: list[WorkerStatus] = []
+    
+    try:
+        mainProc = psutil.Process(mainPid)
+        children = mainProc.children(recursive=True)
+        
+        for child in children:
+            try:
+                # Get worker process info
+                cpuPercent = child.cpu_percent(interval=0.1)
+                memInfo = child.memory_info()
+                memoryMb = memInfo.rss / (1024 * 1024)
+                
+                # Determine status based on CPU usage
+                if cpuPercent > 0.5:
+                    status = "running"
+                else:
+                    status = "idle"
+                
+                # Calculate uptime
+                try:
+                    startTime = datetime.fromtimestamp(child.create_time())
+                    uptime = datetime.now() - startTime
+                except Exception:
+                    uptime = None
+                
+                workers.append(WorkerStatus(
+                    pid=child.pid,
+                    cpuPercent=cpuPercent,
+                    memoryMb=memoryMb,
+                    requestsHandled=0,  # Not available without app instrumentation
+                    status=status,
+                    uptime=uptime,
+                ))
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+                
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        pass
+    
+    return workers
+
+
+def getMasterAndWorkerStatus(pid: int) -> tuple[ProcessStatus, list[WorkerStatus]]:
+    """
+    Get master process status and all worker statuses.
+    
+    Args:
+        pid: Master/main process ID
+    
+    Returns:
+        Tuple of (master_status, worker_statuses)
+    """
+    masterStatus = getProcessStatus(pid)
+    workerStatuses = getWorkerStatuses(pid) if masterStatus.isRunning else []
+    
+    return masterStatus, workerStatuses

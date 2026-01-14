@@ -66,6 +66,7 @@ def printStartupPanel(config: LauncherConfig) -> None:
 def printStatusTable(
     status: dict[str, Any],
     processInfo: Optional[dict[str, Any]] = None,
+    workerStatuses: Optional[list] = None,
 ) -> None:
     """Print status information as a table."""
     table = Table(
@@ -94,6 +95,55 @@ def printStatusTable(
                 table.add_row("Memory", f"{processInfo['memory_mb']:.1f} MB")
             if processInfo.get("cpu_percent") is not None:
                 table.add_row("CPU", f"{processInfo['cpu_percent']:.1f}%")
+        
+        if workerStatuses:
+            table.add_row("Workers", str(len(workerStatuses)))
+    
+    console.print(table)
+    
+    # Print worker status table if available
+    if workerStatuses:
+        printWorkerStatusTable(workerStatuses)
+
+
+def printWorkerStatusTable(workerStatuses: list) -> None:
+    """Print worker status information as a table."""
+    if not workerStatuses:
+        console.print("[dim]No worker processes found[/dim]")
+        return
+    
+    table = Table(
+        title="Worker Status",
+        show_header=True,
+        header_style="bold cyan",
+        border_style="dim",
+    )
+    
+    table.add_column("PID", style="dim", justify="right")
+    table.add_column("Status")
+    table.add_column("CPU %", justify="right")
+    table.add_column("Memory", justify="right")
+    table.add_column("Uptime")
+    
+    for worker in workerStatuses:
+        # Status indicator
+        if worker.status == "running":
+            statusText = Text("● running", style="green")
+        elif worker.status == "idle":
+            statusText = Text("○ idle", style="dim")
+        else:
+            statusText = Text(f"◐ {worker.status}", style="yellow")
+        
+        # Format uptime
+        uptimeStr = _formatUptime(worker.uptime) if worker.uptime else "N/A"
+        
+        table.add_row(
+            str(worker.pid),
+            statusText,
+            f"{worker.cpuPercent:.1f}%",
+            f"{worker.memoryMb:.1f} MB",
+            uptimeStr,
+        )
     
     console.print(table)
 

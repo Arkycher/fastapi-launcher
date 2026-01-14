@@ -240,3 +240,94 @@ class TestPrintHealthStatus:
     def test_print_unhealthy(self) -> None:
         """Test printing unhealthy status."""
         printHealthStatus(False, "http://localhost:8000/health")
+
+
+class TestPrintWorkerStatusTable:
+    """Tests for worker status table printing."""
+
+    def test_print_worker_status_table_empty(self) -> None:
+        """Test printing empty worker status table."""
+        from fastapi_launcher.ui import printWorkerStatusTable
+        
+        # Should not raise
+        printWorkerStatusTable([])
+
+    def test_print_worker_status_table_with_workers(self) -> None:
+        """Test printing worker status table with workers."""
+        from fastapi_launcher.ui import printWorkerStatusTable
+        from fastapi_launcher.process import WorkerStatus
+        
+        workers = [
+            WorkerStatus(
+                pid=1001,
+                cpuPercent=5.0,
+                memoryMb=100.0,
+                requestsHandled=50,
+                status="running",
+                uptime=timedelta(hours=1, minutes=30),
+            ),
+            WorkerStatus(
+                pid=1002,
+                cpuPercent=0.1,
+                memoryMb=80.0,
+                requestsHandled=10,
+                status="idle",
+                uptime=timedelta(minutes=45),
+            ),
+        ]
+        
+        # Should not raise
+        printWorkerStatusTable(workers)
+
+    def test_print_worker_status_table_other_status(self) -> None:
+        """Test printing worker with other status."""
+        from fastapi_launcher.ui import printWorkerStatusTable
+        from fastapi_launcher.process import WorkerStatus
+        
+        workers = [
+            WorkerStatus(
+                pid=1001,
+                cpuPercent=50.0,
+                memoryMb=200.0,
+                requestsHandled=100,
+                status="busy",  # Other status
+                uptime=None,  # No uptime
+            ),
+        ]
+        
+        # Should not raise
+        printWorkerStatusTable(workers)
+
+
+class TestPrintStatusTableWithWorkers:
+    """Tests for status table with worker info."""
+
+    def test_print_status_table_with_worker_statuses(self) -> None:
+        """Test printing status table with worker statuses."""
+        from fastapi_launcher.process import WorkerStatus
+        
+        statusInfo = {
+            "running": True,
+            "pid": 1234,
+            "host": "127.0.0.1",
+            "port": 8000,
+        }
+        
+        processInfo = {
+            "uptime": timedelta(hours=2),
+            "memory_mb": 256.0,
+            "cpu_percent": 10.0,
+        }
+        
+        workerStatuses = [
+            WorkerStatus(
+                pid=1001,
+                cpuPercent=5.0,
+                memoryMb=100.0,
+                requestsHandled=50,
+                status="running",
+            ),
+        ]
+        
+        # Should not raise
+        printStatusTable(statusInfo, processInfo, workerStatuses)

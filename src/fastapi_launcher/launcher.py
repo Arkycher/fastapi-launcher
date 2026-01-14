@@ -9,7 +9,7 @@ import uvicorn
 
 from .config import loadConfig
 from .discover import discoverApp, validateAppPath
-from .enums import RunMode
+from .enums import RunMode, ServerBackend
 from .port import getPortInfo, isPortInUse, waitForPort
 from .process import registerSignalHandlers, writePidFile
 from .schemas import LauncherConfig
@@ -110,26 +110,35 @@ def launch(
     cliArgs: Optional[dict] = None,
     mode: Optional[RunMode] = None,
     showBanner: bool = True,
+    envName: Optional[str] = None,
 ) -> None:
     """
-    Launch FastAPI server with uvicorn.
+    Launch FastAPI server with uvicorn or gunicorn.
     
     Args:
         config: Pre-built configuration (if None, will load from sources)
         cliArgs: CLI arguments to merge into config
         mode: Override run mode
         showBanner: Whether to show startup banner
+        envName: Named environment from pyproject.toml (e.g., 'staging', 'qa')
     
     Raises:
         LaunchError: If launch fails
     """
+    from .enums import ServerBackend
+    
     # Load configuration if not provided
     if config is None:
-        config = loadConfig(
-            projectDir=Path.cwd(),
-            cliArgs=cliArgs,
-            mode=mode,
-        )
+        try:
+            config = loadConfig(
+                projectDir=Path.cwd(),
+                cliArgs=cliArgs,
+                mode=mode,
+                envName=envName,
+            )
+        except ValueError as e:
+            printErrorPanel("Configuration Error", str(e))
+            raise LaunchError(str(e)) from e
     
     # Apply mode override
     if mode is not None:
@@ -171,13 +180,12 @@ def launch(
             LauncherConfig(**{**config.model_dump(by_alias=False), "app": appPath})
         )
     
-    # Build uvicorn config
-    uvicornConfig = buildUvicornConfig(appPath, config)
-    
-    # Run server
+    # Run server based on backend
     try:
-        server = uvicorn.Server(uvicornConfig)
-        server.run()
+        if config.server == ServerBackend.GUNICORN:
+            _runGunicorn(appPath, config, pidFile)
+        else:
+            _runUvicorn(appPath, config, pidFile)
     except Exception as e:
         printErrorPanel("Server Error", str(e))
         raise LaunchError(f"Server failed: {e}") from e
@@ -185,6 +193,67 @@ def launch(
         # Cleanup PID file
         if pidFile.exists():
             pidFile.unlink()
+
+
+def _runUvicorn(appPath: str, config: LauncherConfig, pidFile: Path) -> None:
+    """Run server with Uvicorn backend."""
+    uvicornConfig = buildUvicornConfig(appPath, config)
+    server = uvicorn.Server(uvicornConfig)
+    server.run()
+
+
+def _runGunicorn(appPath: str, config: LauncherConfig, pidFile: Path) -> None:
+    """Run server with Gunicorn backend."""
+    import sys
+    
+    # Check if Gunicorn is available
+    try:
+        from gunicorn.app.base import BaseApplication
+    except ImportError:
+        printErrorPanel(
+            "Gunicorn Not Installed",
+            "Gunicorn is required for this server backend.",
+            suggestions=[
+                "Install with: pip install fastapi-launcher[gunicorn]",
+                "Or use: fa start --server uvicorn",
+            ],
+        )
+        raise LaunchError("Gunicorn is not installed")
+    
+    # Check platform
+    if sys.platform == "win32":
+        printErrorPanel(
+            "Unsupported Platform",
+            "Gunicorn is not supported on Windows.",
+            suggestions=[
+                "Use Uvicorn instead: fa start --server uvicorn",
+                "Use WSL for Windows Subsystem for Linux",
+            ],
+        )
+        raise LaunchError("Gunicorn is not supported on Windows")
+    
+    class GunicornApp(BaseApplication):
+        """Gunicorn application wrapper."""
+        
+        def __init__(self, app: str, options: dict):
+            self.options = options
+            self.application = app
+            super().__init__()
+        
+        def load_config(self):
+            for key, value in self.options.items():
+                if key in self.cfg.settings and value is not None:
+                    self.cfg.set(key.lower(), value)
+        
+        def load(self):
+            return self.application
+    
+    # Build Gunicorn options
+    options = config.toGunicornConfig()
+    
+    # Run Gunicorn
+    gunicornApp = GunicornApp(appPath, options)
+    gunicornApp.run()
 
 
 def launchDev(
