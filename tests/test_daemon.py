@@ -6,6 +6,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+# Skip all tests in this module on Windows (os.fork doesn't exist)
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Daemon tests require os.fork which is not available on Windows"
+)
+
 from fastapi_launcher.daemon import (
     checkDaemonSupport,
     daemonize,
