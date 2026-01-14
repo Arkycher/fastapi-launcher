@@ -3,6 +3,9 @@ name: Publish to PyPI
 on:
   release:
     types: [published]
+  push:
+    tags:
+      - 'v*'  # 推送 v* 格式的 tag 时自动发布
   workflow_dispatch:
 
 jobs:
