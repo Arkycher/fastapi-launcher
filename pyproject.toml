@@ -80,6 +80,7 @@ include = ["src/fastapi_launcher"]
 testpaths = ["tests"]
 pythonpath = ["src"]
 asyncio_mode = "auto"
+timeout = 30  # 每个测试最多30秒
 addopts = [
     "--cov=fastapi_launcher",
     "--cov-report=term-missing",
