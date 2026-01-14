@@ -143,6 +143,7 @@ class TestCheckTextualInstalled:
 class TestRunMonitorSimple:
     """Tests for runMonitorSimple function."""
 
+    @pytest.mark.timeout(5)
     def test_run_monitor_simple_not_running(self, tempDir: Path) -> None:
         """Test simple monitor when server not running."""
         from fastapi_launcher.monitor import runMonitorSimple
@@ -151,9 +152,15 @@ class TestRunMonitorSimple:
         runtimeDir = tempDir / "runtime"
         runtimeDir.mkdir(parents=True, exist_ok=True)
         
+        # Mock Live to immediately exit
+        mockLiveInstance = MagicMock()
+        mockLiveInstance.__enter__ = MagicMock(return_value=mockLiveInstance)
+        mockLiveInstance.__exit__ = MagicMock(return_value=False)
+        
         with patch("fastapi_launcher.monitor.loadConfig") as mockLoadConfig, \
              patch("fastapi_launcher.monitor.readPidFile") as mockReadPid, \
              patch("fastapi_launcher.monitor.console") as mockConsole, \
+             patch("fastapi_launcher.monitor.Live", return_value=mockLiveInstance), \
              patch("fastapi_launcher.monitor.time.sleep", side_effect=KeyboardInterrupt):
             
             mockLoadConfig.return_value = MagicMock(runtimeDir=runtimeDir)
@@ -162,6 +169,7 @@ class TestRunMonitorSimple:
             # Should not hang - KeyboardInterrupt raised on first sleep
             runMonitorSimple(tempDir)
 
+    @pytest.mark.timeout(5)
     def test_run_monitor_simple_running(self, tempDir: Path) -> None:
         """Test simple monitor when server is running."""
         from fastapi_launcher.monitor import runMonitorSimple
@@ -170,12 +178,18 @@ class TestRunMonitorSimple:
         runtimeDir = tempDir / "runtime"
         runtimeDir.mkdir(parents=True, exist_ok=True)
         
+        # Mock Live to immediately exit
+        mockLiveInstance = MagicMock()
+        mockLiveInstance.__enter__ = MagicMock(return_value=mockLiveInstance)
+        mockLiveInstance.__exit__ = MagicMock(return_value=False)
+        
         with patch("fastapi_launcher.monitor.loadConfig") as mockLoadConfig, \
              patch("fastapi_launcher.monitor.readPidFile") as mockReadPid, \
              patch("fastapi_launcher.monitor.isProcessRunning") as mockIsRunning, \
              patch("fastapi_launcher.monitor.getProcessStatus") as mockGetStatus, \
              patch("fastapi_launcher.monitor.getWorkerStatuses") as mockGetWorkers, \
              patch("fastapi_launcher.monitor.console") as mockConsole, \
+             patch("fastapi_launcher.monitor.Live", return_value=mockLiveInstance), \
              patch("fastapi_launcher.monitor.time.sleep", side_effect=KeyboardInterrupt):
             
             mockLoadConfig.return_value = MagicMock(
