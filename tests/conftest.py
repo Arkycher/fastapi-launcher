@@ -9,6 +9,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
+# Skip tests that use Unix-only features on Windows
+if sys.platform == "win32":
+    collect_ignore_glob = [
+        "test_daemon.py",  # Uses os.fork
+    ]
+
 
 @pytest.fixture
 def tempDir() -> Generator[Path, None, None]:
