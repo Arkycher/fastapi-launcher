@@ -42,8 +42,10 @@ def setupLogging(
     logger = logging.getLogger("fastapi_launcher")
     logger.setLevel(logLevel.upper())
 
-    # Remove existing handlers
-    logger.handlers.clear()
+    # Remove existing handlers and close them properly
+    for handler in logger.handlers[:]:
+        handler.close()
+        logger.removeHandler(handler)
 
     if logFormat == LogFormat.PRETTY:
         # Rich handler for pretty output

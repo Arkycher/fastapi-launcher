@@ -89,6 +89,7 @@ def _redirectStdStreams(logFile: Optional[Path] = None) -> None:
     # Open /dev/null for stdin
     devNull = open("/dev/null", "r")
     os.dup2(devNull.fileno(), sys.stdin.fileno())
+    devNull.close()  # 关闭原始文件描述符，dup2 已复制
 
     # Open log file or /dev/null for stdout/stderr
     if logFile:
@@ -96,10 +97,12 @@ def _redirectStdStreams(logFile: Optional[Path] = None) -> None:
         logFd = open(logFile, "a+")
         os.dup2(logFd.fileno(), sys.stdout.fileno())
         os.dup2(logFd.fileno(), sys.stderr.fileno())
+        logFd.close()  # 关闭原始文件描述符，dup2 已复制
     else:
         devNullOut = open("/dev/null", "w")
         os.dup2(devNullOut.fileno(), sys.stdout.fileno())
         os.dup2(devNullOut.fileno(), sys.stderr.fileno())
+        devNullOut.close()  # 关闭原始文件描述符，dup2 已复制
 
 
 def setupDaemonLogging(runtimeDir: Path) -> Path:
