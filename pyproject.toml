@@ -1,6 +1,6 @@
 [project]
 name = "fastapi-launcher"
-version = "0.2.1"
+version = "0.2.2"
 description = "A universal CLI launcher for FastAPI applications with daemon mode, logging, and rich UI"
 readme = "README.md"
 requires-python = ">=3.10"

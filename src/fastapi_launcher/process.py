@@ -60,6 +60,58 @@ def readPidFile(pidPath: Path) -> Optional[int]:
         return None
 
 
+def writeEnvFile(runtimeDir: Path, envName: str) -> None:
+    """
+    Persist named environment to runtime directory.
+
+    Args:
+        runtimeDir: Runtime directory path
+        envName: Environment name (e.g., "prod", "staging")
+    """
+    cleaned = envName.strip()
+    if not cleaned:
+        return
+    runtimeDir.mkdir(parents=True, exist_ok=True)
+    (runtimeDir / "fa.env").write_text(f"{cleaned}\n")
+
+
+def readEnvFile(runtimeDir: Path) -> Optional[str]:
+    """
+    Read persisted named environment from runtime directory.
+
+    Args:
+        runtimeDir: Runtime directory path
+
+    Returns:
+        Environment name if present, otherwise None
+    """
+    envPath = runtimeDir / "fa.env"
+    if not envPath.exists():
+        return None
+    try:
+        content = envPath.read_text().strip()
+    except OSError:
+        return None
+    return content or None
+
+
+def removeEnvFile(runtimeDir: Path) -> bool:
+    """
+    Remove persisted environment file.
+
+    Args:
+        runtimeDir: Runtime directory path
+
+    Returns:
+        True if removed, False otherwise
+    """
+    envPath = runtimeDir / "fa.env"
+    if envPath.exists():
+        envPath.unlink()
+        return True
+    return False
+
+
 def removePidFile(pidPath: Path) -> bool:
     """
     Remove PID file.

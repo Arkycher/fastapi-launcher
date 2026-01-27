@@ -180,7 +180,11 @@ def loadConfig(
         ValueError: If configuration is invalid or environment not found
     """
     if projectDir is None:
-        projectDir = Path.cwd()
+        try:
+            projectDir = Path.cwd()
+        except FileNotFoundError:
+            # 当前工作目录被删除/不可访问时回退到用户目录
+            projectDir = Path.home()
 
     # Load from all sources
     pyprojectConfig = loadPyprojectConfig(projectDir)
@@ -238,7 +242,10 @@ def getAvailableEnvs(projectDir: Optional[Path] = None) -> list[str]:
         List of environment names
     """
     if projectDir is None:
-        projectDir = Path.cwd()
+        try:
+            projectDir = Path.cwd()
+        except FileNotFoundError:
+            projectDir = Path.home()
 
     pyprojectConfig = loadPyprojectConfig(projectDir)
     envs = pyprojectConfig.get("envs", {})

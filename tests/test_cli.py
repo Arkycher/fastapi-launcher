@@ -100,6 +100,44 @@ class TestStartCommand:
         callArgs = mockLaunch.call_args
         assert callArgs.kwargs["cliArgs"]["workers"] == 8
 
+    @patch("fastapi_launcher.cli.daemonize")
+    @patch("fastapi_launcher.cli.setupDaemonLogging")
+    @patch("fastapi_launcher.cli.checkDaemonSupport")
+    @patch("fastapi_launcher.cli.launch")
+    @patch("fastapi_launcher.cli.loadConfig")
+    def test_start_uses_config_daemon_when_no_flag(
+        self,
+        mockLoadConfig: MagicMock,
+        mockLaunch: MagicMock,
+        mockCheckDaemonSupport: MagicMock,
+        mockSetupDaemonLogging: MagicMock,
+        mockDaemonize: MagicMock,
+        mockProjectDir: Path,
+    ) -> None:
+        """未指定 --daemon 时，应当尊重配置中的 daemon=true。"""
+        os.chdir(mockProjectDir)
+        mockCheckDaemonSupport.return_value = (True, "")
+        mockSetupDaemonLogging.return_value = mockProjectDir / "runtime" / "fa.log"
+
+        # 配置合并后的最终结果：daemon=true
+        mockLoadConfig.return_value = MagicMock(runtimeDir=Path("runtime"), daemon=True)
+
+        result = runner.invoke(app, ["start"])
+
+        assert result.exit_code == 0
+        # loadConfig 可能被调用多次（_readPersistedEnvName 会调用一次）
+        assert mockLoadConfig.call_count >= 1
+        # 找到 start 命令实际调用的那次（带 cliArgs 参数）
+        startCalls = [c for c in mockLoadConfig.call_args_list if "cliArgs" in c.kwargs]
+        assert len(startCalls) == 1
+        # 关键：未显式指定时，CLI 不应写入 daemon=False 覆盖配置
+        passedCliArgs = startCalls[0].kwargs.get("cliArgs", {})
+        assert "daemon" not in passedCliArgs
+
+        mockDaemonize.assert_called_once()
+        mockLaunch.assert_called_once()
+        assert mockLaunch.call_args.kwargs["showBanner"] is False
+
 
 class TestStopCommand:
     """Tests for stop command."""
@@ -259,6 +297,71 @@ class TestHealthCommand:
         result = runner.invoke(app, ["health"])
         
         assert result.exit_code == 1
+
+    @patch("fastapi_launcher.cli.printHealthResult")
+    @patch("fastapi_launcher.cli.checkHealth")
+    @patch("fastapi_launcher.cli.loadConfig")
+    def test_health_supports_env_option(
+        self,
+        mockLoadConfig: MagicMock,
+        mockCheckHealth: MagicMock,
+        mockPrintResult: MagicMock,
+    ) -> None:
+        """health 命令应支持 --env 参数并传入 loadConfig。"""
+        from fastapi_launcher.health import HealthCheckResult
+
+        mockLoadConfig.return_value = MagicMock(
+            host="127.0.0.1",
+            port=8020,
+            healthPath="/health",
+        )
+        mockCheckHealth.return_value = HealthCheckResult(healthy=True, statusCode=200)
+
+        result = runner.invoke(app, ["health", "--env", "prod"])
+
+        assert result.exit_code == 0
+        assert mockLoadConfig.call_args.kwargs.get("envName") == "prod"
+
+    @patch("fastapi_launcher.cli.printHealthResult")
+    @patch("fastapi_launcher.cli.checkHealth")
+    @patch("fastapi_launcher.cli.loadConfig")
+    def test_health_uses_persisted_env_by_default(
+        self,
+        mockLoadConfig: MagicMock,
+        mockCheckHealth: MagicMock,
+        mockPrintResult: MagicMock,
+        mockProjectDir: Path,
+    ) -> None:
+        """未传 --env 时，应优先读取 runtime/fa.env 的环境名。"""
+        from fastapi_launcher.health import HealthCheckResult
+
+        os.chdir(mockProjectDir)
+        runtimeDir = mockProjectDir / "runtime"
+        runtimeDir.mkdir(parents=True, exist_ok=True)
+        (runtimeDir / "fa.env").write_text("prod\n")
+
+        def _loadConfigSideEffect(*args, **kwargs):
+            assert kwargs.get("envName") == "prod"
+            return MagicMock(host="127.0.0.1", port=8020, healthPath="/health")
+
+        mockLoadConfig.side_effect = _loadConfigSideEffect
+        mockCheckHealth.return_value = HealthCheckResult(healthy=True, statusCode=200)
+
+        result = runner.invoke(app, ["health"])
+
+        assert result.exit_code == 0
+
+
+class TestConfigCommandWithEnv:
+    """Tests for config command with --env option."""
+
+    @patch("fastapi_launcher.cli.showConfig")
+    def test_config_supports_env_option(self, mockShowConfig: MagicMock) -> None:
+        """config 命令应支持 --env 参数并透传给 showConfig。"""
+        result = runner.invoke(app, ["config", "--env", "prod"])
+
+        assert result.exit_code == 0
+        assert mockShowConfig.call_args.kwargs.get("envName") == "prod"
 
 
 class TestConfigCommand:
@@ -1196,10 +1299,11 @@ class TestStopCommandForce:
     """Tests for stop command with force option."""
 
     def test_stop_force_kill(self, tempDir: Path) -> None:
-        """Test stop command with --force flag."""
+        """Test stop command with --force flag uses killProcess."""
         with patch("fastapi_launcher.cli.loadConfig") as mockLoadConfig, \
              patch("fastapi_launcher.cli.readPidFile") as mockReadPid, \
              patch("fastapi_launcher.cli.isProcessRunning") as mockIsRunning, \
+             patch("fastapi_launcher.cli.killProcess") as mockKill, \
              patch("fastapi_launcher.cli.terminateProcess") as mockTerminate, \
              patch("fastapi_launcher.cli.removePidFile"), \
              patch("fastapi_launcher.cli.waitForPortFree") as mockWaitPort, \
@@ -1208,6 +1312,7 @@ class TestStopCommandForce:
             mockLoadConfig.return_value = MagicMock(runtimeDir=tempDir / "runtime", port=8000)
             mockReadPid.return_value = 12345
             mockIsRunning.return_value = True
+            mockKill.return_value = True
             mockTerminate.return_value = True
             mockWaitPort.return_value = True
             mockSpinner.return_value.__enter__ = MagicMock(return_value=MagicMock())
@@ -1215,4 +1320,391 @@ class TestStopCommandForce:
             
             result = runner.invoke(app, ["stop", "--force"])
             
-            mockTerminate.assert_called_once()
+            # --force 应该调用 killProcess 而不是 terminateProcess
+            mockKill.assert_called_once_with(12345)
+            mockTerminate.assert_not_called()
+
+
+class TestDevCommandErrors:
+    """Tests for dev command error handling."""
+
+    @patch("fastapi_launcher.cli.launch")
+    def test_dev_launch_error(self, mockLaunch: MagicMock) -> None:
+        """Test dev command handles LaunchError."""
+        from fastapi_launcher.launcher import LaunchError
+        
+        mockLaunch.side_effect = LaunchError("App not found")
+        
+        result = runner.invoke(app, ["dev"])
+        
+        assert result.exit_code == 1
+
+
+class TestStartDaemonModes:
+    """Tests for start command daemon mode handling."""
+
+    @patch("fastapi_launcher.cli.launch")
+    @patch("fastapi_launcher.cli.loadConfig")
+    def test_start_with_no_daemon_flag(
+        self, mockLoadConfig: MagicMock, mockLaunch: MagicMock
+    ) -> None:
+        """Test start command with --no-daemon explicitly disables daemon."""
+        # 配置中 daemon=true，但 CLI 显式传入 --no-daemon
+        mockLoadConfig.return_value = MagicMock(runtimeDir=Path("runtime"), daemon=True)
+        
+        result = runner.invoke(app, ["start", "--no-daemon"])
+        
+        assert result.exit_code == 0
+        mockLaunch.assert_called_once()
+        # 验证 cliArgs 中 daemon=False
+        cliArgs = mockLaunch.call_args.kwargs["cliArgs"]
+        assert cliArgs.get("daemon") is False
+
+    @patch("fastapi_launcher.cli.daemonize")
+    @patch("fastapi_launcher.cli.setupDaemonLogging")
+    @patch("fastapi_launcher.cli.checkDaemonSupport")
+    @patch("fastapi_launcher.cli.launch")
+    @patch("fastapi_launcher.cli.loadConfig")
+    def test_start_with_daemon_flag_explicit(
+        self,
+        mockLoadConfig: MagicMock,
+        mockLaunch: MagicMock,
+        mockCheckDaemonSupport: MagicMock,
+        mockSetupDaemonLogging: MagicMock,
+        mockDaemonize: MagicMock,
+        tempDir: Path,
+    ) -> None:
+        """Test start command with --daemon explicitly enables daemon."""
+        os.chdir(tempDir)
+        mockCheckDaemonSupport.return_value = (True, "")
+        mockSetupDaemonLogging.return_value = tempDir / "runtime" / "fa.log"
+        mockLoadConfig.return_value = MagicMock(runtimeDir=Path("runtime"), daemon=False)
+        
+        result = runner.invoke(app, ["start", "--daemon"])
+        
+        assert result.exit_code == 0
+        mockDaemonize.assert_called_once()
+
+
+class TestStopCommandFailure:
+    """Tests for stop command failure handling."""
+
+    def test_stop_terminate_fails(self, tempDir: Path) -> None:
+        """Test stop command when terminate fails."""
+        with patch("fastapi_launcher.cli.loadConfig") as mockLoadConfig, \
+             patch("fastapi_launcher.cli.readPidFile") as mockReadPid, \
+             patch("fastapi_launcher.cli.isProcessRunning") as mockIsRunning, \
+             patch("fastapi_launcher.cli.terminateProcess") as mockTerminate, \
+             patch("fastapi_launcher.cli.createSpinner") as mockSpinner:
+            
+            mockLoadConfig.return_value = MagicMock(runtimeDir=tempDir / "runtime", port=8000)
+            mockReadPid.return_value = 12345
+            mockIsRunning.return_value = True
+            mockTerminate.return_value = False  # 终止失败
+            mockSpinner.return_value.__enter__ = MagicMock(return_value=MagicMock())
+            mockSpinner.return_value.__exit__ = MagicMock(return_value=False)
+            
+            result = runner.invoke(app, ["stop"])
+            
+            assert result.exit_code == 1
+
+    def test_stop_force_kill_fails(self, tempDir: Path) -> None:
+        """Test stop --force command when kill fails."""
+        with patch("fastapi_launcher.cli.loadConfig") as mockLoadConfig, \
+             patch("fastapi_launcher.cli.readPidFile") as mockReadPid, \
+             patch("fastapi_launcher.cli.isProcessRunning") as mockIsRunning, \
+             patch("fastapi_launcher.cli.killProcess") as mockKill, \
+             patch("fastapi_launcher.cli.createSpinner") as mockSpinner:
+            
+            mockLoadConfig.return_value = MagicMock(runtimeDir=tempDir / "runtime", port=8000)
+            mockReadPid.return_value = 12345
+            mockIsRunning.return_value = True
+            mockKill.return_value = False  # 强杀失败
+            mockSpinner.return_value.__enter__ = MagicMock(return_value=MagicMock())
+            mockSpinner.return_value.__exit__ = MagicMock(return_value=False)
+            
+            result = runner.invoke(app, ["stop", "--force"])
+            
+            assert result.exit_code == 1
+
+
+class TestPersistedEnvWithCustomRuntimeDir:
+    """Tests for persisted env reading with custom runtime_dir."""
+
+    @patch("fastapi_launcher.cli.checkHealth")
+    @patch("fastapi_launcher.cli.printHealthResult")
+    def test_health_reads_from_custom_runtime_dir(
+        self, mockPrintResult: MagicMock, mockCheckHealth: MagicMock, mockProjectDir: Path
+    ) -> None:
+        """Test health command reads env from custom runtime_dir."""
+        from fastapi_launcher.health import HealthCheckResult
+        
+        os.chdir(mockProjectDir)
+        
+        # 创建自定义 runtime 目录和 fa.env
+        customRuntimeDir = mockProjectDir / "custom_runtime"
+        customRuntimeDir.mkdir(parents=True, exist_ok=True)
+        (customRuntimeDir / "fa.env").write_text("prod\n")
+        
+        # 配置 pyproject.toml 使用自定义 runtime_dir
+        pyprojectPath = mockProjectDir / "pyproject.toml"
+        pyprojectPath.write_text("""
+[project]
+name = "test-project"
+version = "0.1.0"
+
+[tool.fastapi-launcher]
+app = "main:app"
+host = "127.0.0.1"
+port = 8000
+runtime_dir = "custom_runtime"
+
+[tool.fastapi-launcher.envs.prod]
+port = 8020
+""")
+        
+        mockCheckHealth.return_value = HealthCheckResult(healthy=True, statusCode=200)
+        
+        result = runner.invoke(app, ["health"])
+        
+        # 验证使用了 prod 环境的端口
+        assert result.exit_code == 0
+        callArgs = mockCheckHealth.call_args
+        assert callArgs.kwargs["port"] == 8020
+
+
+class TestEnvPersistence:
+    """Tests for environment persistence during start."""
+
+    @patch("fastapi_launcher.cli.launch")
+    @patch("fastapi_launcher.cli.writeEnvFile")
+    @patch("fastapi_launcher.cli.loadConfig")
+    def test_start_persists_env_name(
+        self,
+        mockLoadConfig: MagicMock,
+        mockWriteEnvFile: MagicMock,
+        mockLaunch: MagicMock,
+    ) -> None:
+        """Test start command persists env name to fa.env."""
+        mockLoadConfig.return_value = MagicMock(runtimeDir=Path("runtime"), daemon=False)
+        
+        result = runner.invoke(app, ["start", "--env", "prod"])
+        
+        assert result.exit_code == 0
+        mockWriteEnvFile.assert_called_once()
+        callArgs = mockWriteEnvFile.call_args
+        assert callArgs[0][1] == "prod"
+
+    @patch("fastapi_launcher.cli.launch")
+    @patch("fastapi_launcher.cli.writeEnvFile")
+    @patch("fastapi_launcher.cli.readEnvFile")
+    @patch("fastapi_launcher.cli.loadConfig")
+    def test_start_without_env_does_not_persist(
+        self,
+        mockLoadConfig: MagicMock,
+        mockReadEnvFile: MagicMock,
+        mockWriteEnvFile: MagicMock,
+        mockLaunch: MagicMock,
+    ) -> None:
+        """Test start command without --env does not write fa.env."""
+        mockLoadConfig.return_value = MagicMock(runtimeDir=Path("runtime"), daemon=False)
+        mockReadEnvFile.return_value = None  # 没有持久化的环境
+        
+        result = runner.invoke(app, ["start"])
+        
+        assert result.exit_code == 0
+        mockWriteEnvFile.assert_not_called()
+
+
+class TestAuxiliaryCommandsWithEnv:
+    """Tests for auxiliary commands with --env parameter."""
+
+    @patch("fastapi_launcher.cli.loadConfig")
+    @patch("fastapi_launcher.cli.readPidFile")
+    def test_stop_with_env(
+        self, mockReadPid: MagicMock, mockLoadConfig: MagicMock, tempDir: Path
+    ) -> None:
+        """Test stop command respects --env parameter."""
+        mockLoadConfig.return_value = MagicMock(runtimeDir=tempDir / "runtime", port=8020)
+        mockReadPid.return_value = None
+        
+        result = runner.invoke(app, ["stop", "--env", "prod"])
+        
+        assert mockLoadConfig.call_args.kwargs.get("envName") == "prod"
+
+    @patch("fastapi_launcher.cli.loadConfig")
+    @patch("fastapi_launcher.cli.readPidFile")
+    @patch("fastapi_launcher.cli.isProcessRunning")
+    @patch("fastapi_launcher.cli.printStatusTable")
+    def test_status_with_env(
+        self,
+        mockPrintStatus: MagicMock,
+        mockIsRunning: MagicMock,
+        mockReadPid: MagicMock,
+        mockLoadConfig: MagicMock,
+        tempDir: Path,
+    ) -> None:
+        """Test status command respects --env parameter."""
+        mockLoadConfig.return_value = MagicMock(
+            runtimeDir=tempDir / "runtime", host="127.0.0.1", port=8020
+        )
+        mockReadPid.return_value = None
+        mockIsRunning.return_value = False
+        
+        with patch("fastapi_launcher.cli.isPortInUse", return_value=False):
+            result = runner.invoke(app, ["status", "--env", "prod"])
+        
+        assert result.exit_code == 0
+        assert mockLoadConfig.call_args.kwargs.get("envName") == "prod"
+
+    @patch("fastapi_launcher.cli.loadConfig")
+    @patch("fastapi_launcher.cli.getLogFiles")
+    def test_logs_with_env(
+        self, mockGetLogFiles: MagicMock, mockLoadConfig: MagicMock, tempDir: Path
+    ) -> None:
+        """Test logs command respects --env parameter."""
+        mockLoadConfig.return_value = MagicMock(runtimeDir=tempDir / "runtime", logFormat="pretty")
+        mockGetLogFiles.return_value = {"main": tempDir / "fa.log"}
+        
+        result = runner.invoke(app, ["logs", "--env", "prod", "--type", "main"])
+        
+        # 会失败因为日志文件不存在，但我们检查 envName 是否正确传递
+        loadConfigCalls = [c for c in mockLoadConfig.call_args_list if "envName" in c.kwargs]
+        assert any(c.kwargs.get("envName") == "prod" for c in loadConfigCalls)
+
+    @patch("fastapi_launcher.cli.loadConfig")
+    @patch("fastapi_launcher.cli.readPidFile")
+    @patch("fastapi_launcher.cli.isProcessRunning")
+    def test_reload_with_env(
+        self,
+        mockIsRunning: MagicMock,
+        mockReadPid: MagicMock,
+        mockLoadConfig: MagicMock,
+        tempDir: Path,
+    ) -> None:
+        """Test reload command respects --env parameter."""
+        mockLoadConfig.return_value = MagicMock(runtimeDir=tempDir / "runtime")
+        mockReadPid.return_value = None
+        
+        result = runner.invoke(app, ["reload", "--env", "prod"])
+        
+        # 验证 envName 被传递
+        loadConfigCalls = [c for c in mockLoadConfig.call_args_list if "envName" in c.kwargs]
+        assert any(c.kwargs.get("envName") == "prod" for c in loadConfigCalls)
+
+    @patch("fastapi_launcher.cli.loadConfig")
+    @patch("fastapi_launcher.cli.readPidFile")
+    @patch("fastapi_launcher.cli.isProcessRunning")
+    @patch("fastapi_launcher.monitor.runMonitorSimple")
+    def test_monitor_with_env(
+        self,
+        mockRunSimple: MagicMock,
+        mockIsRunning: MagicMock,
+        mockReadPid: MagicMock,
+        mockLoadConfig: MagicMock,
+        tempDir: Path,
+    ) -> None:
+        """Test monitor command respects --env parameter."""
+        mockLoadConfig.return_value = MagicMock(runtimeDir=tempDir / "runtime")
+        mockReadPid.return_value = None
+        mockIsRunning.return_value = False
+        mockRunSimple.side_effect = KeyboardInterrupt()
+        
+        result = runner.invoke(app, ["monitor", "--env", "prod", "--no-tui"])
+        
+        loadConfigCalls = [c for c in mockLoadConfig.call_args_list if "envName" in c.kwargs]
+        assert any(c.kwargs.get("envName") == "prod" for c in loadConfigCalls)
+
+
+class TestReadPersistedEnvFallback:
+    """Tests for _readPersistedEnvName custom runtime_dir fallback."""
+
+    def test_read_persisted_env_from_custom_runtime_dir(self, mockProjectDir: Path) -> None:
+        """Test reading persisted env from custom runtime_dir when default not found."""
+        os.chdir(mockProjectDir)
+        
+        # 配置自定义 runtime_dir
+        pyprojectPath = mockProjectDir / "pyproject.toml"
+        pyprojectPath.write_text("""
+[project]
+name = "test-project"
+version = "0.1.0"
+
+[tool.fastapi-launcher]
+app = "main:app"
+runtime_dir = "custom_runtime"
+""")
+        
+        # 创建自定义目录的 fa.env
+        customRuntimeDir = mockProjectDir / "custom_runtime"
+        customRuntimeDir.mkdir(parents=True, exist_ok=True)
+        (customRuntimeDir / "fa.env").write_text("prod\n")
+        
+        # 确保默认目录没有 fa.env
+        defaultRuntimeDir = mockProjectDir / "runtime"
+        if (defaultRuntimeDir / "fa.env").exists():
+            (defaultRuntimeDir / "fa.env").unlink()
+        
+        from fastapi_launcher.cli import _readPersistedEnvName
+        
+        result = _readPersistedEnvName(mockProjectDir)
+        assert result == "prod"
+
+    def test_read_persisted_env_config_error_returns_none(self, tempDir: Path) -> None:
+        """Test that config loading error returns None gracefully."""
+        os.chdir(tempDir)
+        
+        # 确保默认目录没有 fa.env
+        defaultRuntimeDir = tempDir / "runtime"
+        defaultRuntimeDir.mkdir(parents=True, exist_ok=True)
+        # 不创建 fa.env，让它走 fallback 路径
+        
+        # 创建无效的 pyproject.toml 使 loadConfig 抛出异常
+        pyprojectPath = tempDir / "pyproject.toml"
+        pyprojectPath.write_text("""
+[tool.fastapi-launcher]
+port = "not_a_number"
+""")
+        
+        from fastapi_launcher.cli import _readPersistedEnvName
+        
+        # 应该返回 None，不抛出异常（fallback 路径中的异常被捕获）
+        result = _readPersistedEnvName(tempDir)
+        assert result is None
+
+    def test_read_persisted_env_os_error_returns_none(self, tempDir: Path) -> None:
+        """Test that OSError during config loading returns None gracefully."""
+        os.chdir(tempDir)
+        
+        from fastapi_launcher.cli import _readPersistedEnvName
+        
+        # Mock loadConfig to raise OSError
+        with patch("fastapi_launcher.cli.loadConfig", side_effect=OSError("Permission denied")):
+            result = _readPersistedEnvName(tempDir)
+            assert result is None
+
+
+class TestCleanEnvFile:
+    """Tests for clean command with env file."""
+
+    def test_clean_removes_env_file(self, tempDir: Path) -> None:
+        """Test clean command removes fa.env file."""
+        with patch("fastapi_launcher.cli.loadConfig") as mockLoadConfig, \
+             patch("fastapi_launcher.cli.cleanLogs") as mockCleanLogs, \
+             patch("fastapi_launcher.cli.readPidFile") as mockReadPid:
+            
+            runtimeDir = tempDir / "runtime"
+            runtimeDir.mkdir(parents=True, exist_ok=True)
+            
+            # 创建 fa.env 文件
+            envFile = runtimeDir / "fa.env"
+            envFile.write_text("prod\n")
+            
+            mockLoadConfig.return_value = MagicMock(runtimeDir=runtimeDir)
+            mockCleanLogs.return_value = 0
+            mockReadPid.return_value = None
+            
+            result = runner.invoke(app, ["clean", "--yes"])
+            
+            assert result.exit_code == 0
+            assert not envFile.exists()

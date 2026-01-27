@@ -542,3 +542,72 @@ timeout_graceful_shutdown = 30
         assert gunicornConfig["max_requests_jitter"] == 100
         assert gunicornConfig["loglevel"] == "info"
         assert gunicornConfig["graceful_timeout"] == 30
+
+
+class TestLoadConfigCwdFallback:
+    """Tests for loadConfig handling of FileNotFoundError on Path.cwd()."""
+
+    def test_loadconfig_with_explicit_project_dir(self, tempDir: Path) -> None:
+        """Test loadConfig works with explicit projectDir even if cwd fails."""
+        # 创建有效的 pyproject.toml
+        pyprojectPath = tempDir / "pyproject.toml"
+        pyprojectPath.write_text("""
+[tool.fastapi-launcher]
+app = "main:app"
+host = "127.0.0.1"
+port = 8000
+""")
+        
+        # 直接传入 projectDir，不依赖 cwd
+        config = loadConfig(projectDir=tempDir)
+        
+        assert config.host == "127.0.0.1"
+        assert config.port == 8000
+
+    def test_loadconfig_cwd_fallback_to_home(self) -> None:
+        """Test loadConfig falls back to home directory when cwd fails."""
+        from unittest.mock import patch
+        
+        # Mock Path.cwd to raise FileNotFoundError
+        with patch("fastapi_launcher.config.Path.cwd", side_effect=FileNotFoundError("No such file")):
+            # 不传 projectDir，触发 cwd fallback
+            config = loadConfig()
+            
+            # 应该使用默认配置，不抛出异常
+            assert config is not None
+            assert config.host == "127.0.0.1"  # 默认值
+
+
+class TestGetAvailableEnvsCwdFallback:
+    """Tests for getAvailableEnvs handling of FileNotFoundError."""
+
+    def test_get_available_envs_with_explicit_dir(self, tempDir: Path) -> None:
+        """Test getAvailableEnvs works with explicit projectDir."""
+        from fastapi_launcher.config import getAvailableEnvs
+        
+        pyprojectPath = tempDir / "pyproject.toml"
+        pyprojectPath.write_text("""
+[tool.fastapi-launcher]
+app = "main:app"
+
+[tool.fastapi-launcher.envs.prod]
+port = 8020
+
+[tool.fastapi-launcher.envs.staging]
+port = 8010
+""")
+        
+        envs = getAvailableEnvs(tempDir)
+        
+        assert "prod" in envs
+        assert "staging" in envs
+
+    def test_get_available_envs_cwd_fallback(self) -> None:
+        """Test getAvailableEnvs falls back to home when cwd fails."""
+        from unittest.mock import patch
+        from fastapi_launcher.config import getAvailableEnvs
+        
+        with patch("fastapi_launcher.config.Path.cwd", side_effect=FileNotFoundError("No such file")):
+            # 应该返回空列表，不抛出异常
+            envs = getAvailableEnvs()
+            assert isinstance(envs, list)

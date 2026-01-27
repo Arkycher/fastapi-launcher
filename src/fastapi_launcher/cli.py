@@ -18,9 +18,13 @@ from .port import getPortInfo, isPortInUse, waitForPortFree
 from .process import (
     getProcessStatus,
     isProcessRunning,
+    killProcess,
+    readEnvFile,
     readPidFile,
+    removeEnvFile,
     removePidFile,
     terminateProcess,
+    writeEnvFile,
 )
 from .ui import (
     console,
@@ -38,6 +42,51 @@ app = typer.Typer(
     add_completion=True,
     rich_markup_mode="rich",
 )
+
+
+def _getProjectDir() -> Path:
+    """Get a usable project directory even if CWD is missing."""
+    try:
+        return Path.cwd()
+    except FileNotFoundError:
+        return Path.home()
+
+
+def _resolveRuntimeDir(projectDir: Path, runtimeDir: Path) -> Path:
+    resolved = runtimeDir
+    if not resolved.is_absolute():
+        resolved = projectDir / resolved
+    return resolved
+
+
+def _readPersistedEnvName(projectDir: Path) -> Optional[str]:
+    """
+    Read persisted env name from runtime directory.
+
+    Search order:
+    1. Default location: <projectDir>/runtime/fa.env
+    2. Custom runtime_dir from base config (if different from default)
+    """
+    defaultRuntimeDir = projectDir / "runtime"
+    envName = readEnvFile(defaultRuntimeDir)
+    if envName:
+        return envName
+
+    # Fallback: check custom runtime_dir from base config
+    try:
+        baseConfig = loadConfig(projectDir=projectDir)
+        customRuntimeDir = _resolveRuntimeDir(projectDir, baseConfig.runtimeDir)
+        if customRuntimeDir != defaultRuntimeDir:
+            return readEnvFile(customRuntimeDir)
+    except (ValueError, OSError):
+        # Config loading failed, ignore and return None
+        pass
+
+    return None
+
+
+def _resolveEnvName(projectDir: Path, env: Optional[str]) -> Optional[str]:
+    return env or _readPersistedEnvName(projectDir)
 
 
 def versionCallback(value: bool) -> None:
@@ -154,10 +203,10 @@ def start(
         "-w",
         help="Number of worker processes",
     ),
-    daemon_mode: bool = typer.Option(
-        False,
-        "--daemon",
-        "-d",
+    daemon_mode: Optional[bool] = typer.Option(
+        None,
+        "--daemon/--no-daemon",
+        "-d/-D",
         help="Run as daemon (background process)",
     ),
     log_level: str = typer.Option(
@@ -203,38 +252,59 @@ def start(
             )
             raise typer.Exit(1)
 
-    cliArgs = {
+    cliArgs: dict[str, object] = {
         "app": app_path,
         "host": host,
         "port": port,
         "workers": workers,
-        "daemon": daemon_mode,
         "log_level": log_level,
         "server": serverBackend,
         "timeout_graceful_shutdown": timeout_graceful_shutdown,
         "max_requests": max_requests,
     }
 
-    if daemon_mode:
+    # 只有显式指定 --daemon/--no-daemon 时才覆盖配置
+    if daemon_mode is not None:
+        cliArgs["daemon"] = daemon_mode
+
+    projectDir = _getProjectDir()
+    envName = _resolveEnvName(projectDir, env)
+
+    # 先合并配置，避免 CLI 默认值覆盖配置文件
+    config = loadConfig(cliArgs=cliArgs, envName=envName)
+    runtimeDir = _resolveRuntimeDir(projectDir, config.runtimeDir)
+
+    # 启动时持久化当前环境（用于辅助命令默认读取）
+    if envName:
+        writeEnvFile(runtimeDir, envName)
+
+    didDaemonize = False
+    # daemon 启用优先级：CLI 显式指定 > 配置
+    if daemon_mode is False:
+        daemonEnabled = False
+    elif daemon_mode is True:
+        daemonEnabled = True
+    else:
+        daemonEnabled = getattr(config, "daemon", False) is True
+    if daemonEnabled:
         supported, msg = checkDaemonSupport()
         if not supported:
             printWarningMessage(msg)
         else:
             # Setup logging before daemonizing
-            config = loadConfig(cliArgs=cliArgs, envName=env)
-            runtimeDir = config.runtimeDir
-            if not runtimeDir.is_absolute():
-                runtimeDir = Path.cwd() / runtimeDir
-
             logFile = setupDaemonLogging(runtimeDir)
             pidFile = runtimeDir / "fa.pid"
 
             printInfoMessage(f"Starting daemon... (PID file: {pidFile})")
-            daemonize(pidFile=pidFile, logFile=logFile, workDir=Path.cwd())
+            daemonize(pidFile=pidFile, logFile=logFile, workDir=projectDir)
+            didDaemonize = True
 
     try:
         launch(
-            cliArgs=cliArgs, mode=RunMode.PROD, showBanner=not daemon_mode, envName=env
+            cliArgs=cliArgs,
+            mode=RunMode.PROD,
+            showBanner=not didDaemonize,
+            envName=envName,
         )
     except LaunchError:
         raise typer.Exit(1)
@@ -256,12 +326,18 @@ def stop(
         "-t",
         help="Timeout in seconds before force kill",
     ),
+    env: Optional[str] = typer.Option(
+        None,
+        "--env",
+        "-e",
+        help="Named environment from pyproject.toml (e.g., staging, prod)",
+    ),
 ) -> None:
     """Stop running server."""
-    config = loadConfig()
-    runtimeDir = config.runtimeDir
-    if not runtimeDir.is_absolute():
-        runtimeDir = Path.cwd() / runtimeDir
+    projectDir = _getProjectDir()
+    envName = _resolveEnvName(projectDir, env)
+    config = loadConfig(envName=envName)
+    runtimeDir = _resolveRuntimeDir(projectDir, config.runtimeDir)
 
     pidFile = runtimeDir / "fa.pid"
     pid = readPidFile(pidFile)
@@ -275,16 +351,26 @@ def stop(
         removePidFile(pidFile)
         raise typer.Exit(0)
 
-    printInfoMessage(f"Stopping server (PID: {pid})...")
+    if force:
+        printInfoMessage(f"Force killing server (PID: {pid})...")
+    else:
+        printInfoMessage(f"Stopping server (PID: {pid})...")
 
     with createSpinner("Stopping...") as progress:
         progress.add_task("Stopping server...", total=None)
 
-        if terminateProcess(pid, timeout=timeout):
-            removePidFile(pidFile)
+        if force:
+            stopped = killProcess(pid)
+        else:
+            stopped = terminateProcess(pid, timeout=timeout)
 
+        if stopped:
+            removePidFile(pidFile)
             # Wait for port to be free
             waitForPortFree(config.port, timeout=5.0)
+        else:
+            printErrorMessage("Failed to stop server")
+            raise typer.Exit(1)
 
     printSuccessMessage("Server stopped successfully")
 
@@ -297,12 +383,18 @@ def restart(
         "-t",
         help="Timeout for stopping server",
     ),
+    env: Optional[str] = typer.Option(
+        None,
+        "--env",
+        "-e",
+        help="Named environment from pyproject.toml (e.g., staging, prod)",
+    ),
 ) -> None:
     """Restart server (stop + start)."""
-    config = loadConfig()
-    runtimeDir = config.runtimeDir
-    if not runtimeDir.is_absolute():
-        runtimeDir = Path.cwd() / runtimeDir
+    projectDir = _getProjectDir()
+    envName = _resolveEnvName(projectDir, env)
+    config = loadConfig(envName=envName)
+    runtimeDir = _resolveRuntimeDir(projectDir, config.runtimeDir)
 
     pidFile = runtimeDir / "fa.pid"
     pid = readPidFile(pidFile)
@@ -324,13 +416,15 @@ def restart(
     # Start in the same mode
     printInfoMessage("Starting server...")
 
+    didDaemonize = False
     if wasDaemon:
         # Re-daemonize
         logFile = setupDaemonLogging(runtimeDir)
-        daemonize(pidFile=pidFile, logFile=logFile, workDir=Path.cwd())
+        daemonize(pidFile=pidFile, logFile=logFile, workDir=projectDir)
+        didDaemonize = True
 
     try:
-        launch(mode=config.mode, showBanner=True)
+        launch(mode=config.mode, showBanner=not didDaemonize, envName=envName)
     except LaunchError:
         raise typer.Exit(1)
 
@@ -343,14 +437,20 @@ def status(
         "-v",
         help="Show detailed worker status",
     ),
+    env: Optional[str] = typer.Option(
+        None,
+        "--env",
+        "-e",
+        help="Named environment from pyproject.toml (e.g., staging, prod)",
+    ),
 ) -> None:
     """Show server status."""
     from .process import getWorkerStatuses
 
-    config = loadConfig()
-    runtimeDir = config.runtimeDir
-    if not runtimeDir.is_absolute():
-        runtimeDir = Path.cwd() / runtimeDir
+    projectDir = _getProjectDir()
+    envName = _resolveEnvName(projectDir, env)
+    config = loadConfig(envName=envName)
+    runtimeDir = _resolveRuntimeDir(projectDir, config.runtimeDir)
 
     pidFile = runtimeDir / "fa.pid"
     pid = readPidFile(pidFile)
@@ -413,12 +513,18 @@ def logs(
         "-t",
         help="Log type: main, access, error",
     ),
+    env: Optional[str] = typer.Option(
+        None,
+        "--env",
+        "-e",
+        help="Named environment from pyproject.toml (e.g., staging, prod)",
+    ),
 ) -> None:
     """View server logs."""
-    config = loadConfig()
-    runtimeDir = config.runtimeDir
-    if not runtimeDir.is_absolute():
-        runtimeDir = Path.cwd() / runtimeDir
+    projectDir = _getProjectDir()
+    envName = _resolveEnvName(projectDir, env)
+    config = loadConfig(envName=envName)
+    runtimeDir = _resolveRuntimeDir(projectDir, config.runtimeDir)
 
     logFiles = getLogFiles(runtimeDir)
 
@@ -465,9 +571,17 @@ def health(
         "-t",
         help="Request timeout in seconds",
     ),
+    env: Optional[str] = typer.Option(
+        None,
+        "--env",
+        "-e",
+        help="Named environment from pyproject.toml (e.g., staging, prod)",
+    ),
 ) -> None:
     """Check server health."""
-    config = loadConfig()
+    projectDir = _getProjectDir()
+    envName = _resolveEnvName(projectDir, env)
+    config = loadConfig(envName=envName)
 
     checkHost = host or config.host
     checkPort = port or config.port
@@ -491,9 +605,18 @@ def health(
 
 
 @app.command()
-def config() -> None:
+def config(
+    env: Optional[str] = typer.Option(
+        None,
+        "--env",
+        "-e",
+        help="Named environment from pyproject.toml (e.g., staging, prod)",
+    ),
+) -> None:
     """Show current configuration."""
-    showConfig()
+    projectDir = _getProjectDir()
+    envName = _resolveEnvName(projectDir, env)
+    showConfig(projectDir=projectDir, envName=envName)
 
 
 @app.command()
@@ -520,12 +643,18 @@ def clean(
         "-y",
         help="Skip confirmation",
     ),
+    env: Optional[str] = typer.Option(
+        None,
+        "--env",
+        "-e",
+        help="Named environment from pyproject.toml (e.g., staging, prod)",
+    ),
 ) -> None:
     """Clean runtime files (PID, logs)."""
-    config = loadConfig()
-    runtimeDir = config.runtimeDir
-    if not runtimeDir.is_absolute():
-        runtimeDir = Path.cwd() / runtimeDir
+    projectDir = _getProjectDir()
+    envName = _resolveEnvName(projectDir, env)
+    config = loadConfig(envName=envName)
+    runtimeDir = _resolveRuntimeDir(projectDir, config.runtimeDir)
 
     if not runtimeDir.exists():
         printInfoMessage("Runtime directory does not exist. Nothing to clean.")
@@ -545,6 +674,11 @@ def clean(
         printSuccessMessage(f"Cleaned {logsCount} log file(s)")
 
     if not logs_only:
+        # Clean persisted env file
+        if removeEnvFile(runtimeDir):
+            cleanedCount += 1
+            printSuccessMessage("Cleaned env file")
+
         # Clean PID file
         pidFile = runtimeDir / "fa.pid"
         if pidFile.exists():
@@ -584,7 +718,7 @@ def initCmd(
     from .init import initConfig
 
     success, message = initConfig(
-        projectDir=Path.cwd(),
+        projectDir=_getProjectDir(),
         force=force,
         generateEnv=env,
     )
@@ -646,7 +780,14 @@ def run(
 
 
 @app.command()
-def reload() -> None:
+def reload(
+    env: Optional[str] = typer.Option(
+        None,
+        "--env",
+        "-e",
+        help="Named environment from pyproject.toml (e.g., staging, prod)",
+    ),
+) -> None:
     """Trigger hot reload on running server (dev mode only)."""
     import signal
 
@@ -655,10 +796,10 @@ def reload() -> None:
         printWarningMessage("Reload command is not supported on Windows")
         raise typer.Exit(1)
 
-    config = loadConfig()
-    runtimeDir = config.runtimeDir
-    if not runtimeDir.is_absolute():
-        runtimeDir = Path.cwd() / runtimeDir
+    projectDir = _getProjectDir()
+    envName = _resolveEnvName(projectDir, env)
+    config = loadConfig(envName=envName)
+    runtimeDir = _resolveRuntimeDir(projectDir, config.runtimeDir)
 
     pidFile = runtimeDir / "fa.pid"
     pid = readPidFile(pidFile)
@@ -699,15 +840,21 @@ def monitor(
         "-r",
         help="Refresh interval in seconds",
     ),
+    env: Optional[str] = typer.Option(
+        None,
+        "--env",
+        "-e",
+        help="Named environment from pyproject.toml (e.g., staging, prod)",
+    ),
 ) -> None:
     """Real-time monitor for server status (requires textual for TUI)."""
     from .monitor import checkTextualInstalled, runMonitorSimple, runMonitorTui
 
     # Check if server is running first
-    config = loadConfig()
-    runtimeDir = config.runtimeDir
-    if not runtimeDir.is_absolute():
-        runtimeDir = Path.cwd() / runtimeDir
+    projectDir = _getProjectDir()
+    envName = _resolveEnvName(projectDir, env)
+    config = loadConfig(envName=envName)
+    runtimeDir = _resolveRuntimeDir(projectDir, config.runtimeDir)
 
     pidFile = runtimeDir / "fa.pid"
     pid = readPidFile(pidFile)

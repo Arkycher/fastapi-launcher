@@ -198,3 +198,40 @@ class TestWaitForHealthy:
         result = waitForHealthy(timeout=0.5, checkInterval=0.1)
         
         assert result is False
+
+
+class TestHealthCheckEdgeCases:
+    """Tests for health check edge cases."""
+
+    @patch("fastapi_launcher.health.httpx.Client")
+    def test_check_health_json_parse_error(self, mockClient: MagicMock) -> None:
+        """Test health check when JSON parsing fails."""
+        from fastapi_launcher.health import checkHealth
+        
+        mockResponse = MagicMock()
+        mockResponse.status_code = 200
+        mockResponse.json.side_effect = ValueError("Invalid JSON")
+        
+        mockClient.return_value.__enter__ = MagicMock(return_value=MagicMock(get=MagicMock(return_value=mockResponse)))
+        mockClient.return_value.__exit__ = MagicMock(return_value=False)
+        
+        result = checkHealth()
+        
+        # Should still be healthy, just without body
+        assert result.healthy is True
+        assert result.body is None
+
+    @patch("fastapi_launcher.health.httpx.Client")
+    def test_check_health_generic_exception(self, mockClient: MagicMock) -> None:
+        """Test health check with generic exception."""
+        from fastapi_launcher.health import checkHealth
+        
+        mockClient.return_value.__enter__ = MagicMock(
+            return_value=MagicMock(get=MagicMock(side_effect=RuntimeError("Unexpected error")))
+        )
+        mockClient.return_value.__exit__ = MagicMock(return_value=False)
+        
+        result = checkHealth()
+        
+        assert result.healthy is False
+        assert "Unexpected error" in result.error

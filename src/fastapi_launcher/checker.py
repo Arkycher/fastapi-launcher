@@ -294,15 +294,16 @@ def printCheckReport(report: CheckReport) -> None:
         printWarningMessage(f"{report.passedCount} passed, {report.failedCount} failed")
 
 
-def showConfig(projectDir: Optional[Path] = None) -> None:
+def showConfig(projectDir: Optional[Path] = None, envName: Optional[str] = None) -> None:
     """
     Show current configuration.
 
     Args:
         projectDir: Project directory
+        envName: Named environment from pyproject.toml (e.g., 'staging', 'prod')
     """
     try:
-        config = loadConfig(projectDir)
+        config = loadConfig(projectDir, envName=envName)
         summary = getConfigSummary(config)
         printConfigTable(summary, title="Current Configuration")
     except ValueError as e:

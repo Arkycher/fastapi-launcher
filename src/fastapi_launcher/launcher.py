@@ -123,11 +123,17 @@ def launch(
         LaunchError: If launch fails
     """
 
+    def _safeCwd() -> Path:
+        try:
+            return Path.cwd()
+        except FileNotFoundError:
+            return Path.home()
+
     # Load configuration if not provided
     if config is None:
         try:
             config = loadConfig(
-                projectDir=Path.cwd(),
+                projectDir=_safeCwd(),
                 cliArgs=cliArgs,
                 mode=mode,
                 envName=envName,
@@ -152,7 +158,7 @@ def launch(
     # Setup runtime directory
     runtimeDir = config.runtimeDir
     if not runtimeDir.is_absolute():
-        runtimeDir = Path.cwd() / runtimeDir
+        runtimeDir = _safeCwd() / runtimeDir
     runtimeDir.mkdir(parents=True, exist_ok=True)
 
     # Write PID file
@@ -160,7 +166,7 @@ def launch(
     writePidFile(pidFile)
 
     # Add project directory to path
-    projectDir = config.appDir or Path.cwd()
+    projectDir = config.appDir or _safeCwd()
     projectDirStr = str(projectDir)
     if projectDirStr not in sys.path:
         sys.path.insert(0, projectDirStr)

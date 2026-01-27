@@ -18,13 +18,16 @@ from fastapi_launcher.process import (
     getWorkerStatuses,
     isProcessRunning,
     killProcess,
+    readEnvFile,
     readPidFile,
     registerSignalHandlers,
+    removeEnvFile,
     removePidFile,
     sendSignal,
     terminateProcess,
     terminateProcessTree,
     waitForExit,
+    writeEnvFile,
     writePidFile,
 )
 
@@ -92,6 +95,104 @@ class TestPidFile:
         pidPath = tempDir / "nonexistent.pid"
         
         result = removePidFile(pidPath)
+        assert result is False
+
+
+class TestEnvFile:
+    """Tests for environment file operations."""
+
+    def test_write_env_file(self, tempDir: Path) -> None:
+        """Test writing environment file."""
+        writeEnvFile(tempDir, "prod")
+        
+        envPath = tempDir / "fa.env"
+        assert envPath.exists()
+        assert envPath.read_text().strip() == "prod"
+
+    def test_write_env_file_creates_directory(self, tempDir: Path) -> None:
+        """Test that parent directories are created."""
+        runtimeDir = tempDir / "subdir" / "runtime"
+        writeEnvFile(runtimeDir, "staging")
+        
+        envPath = runtimeDir / "fa.env"
+        assert envPath.exists()
+        assert envPath.read_text().strip() == "staging"
+
+    def test_write_env_file_empty_string_skipped(self, tempDir: Path) -> None:
+        """Test that empty environment name is skipped."""
+        writeEnvFile(tempDir, "")
+        
+        envPath = tempDir / "fa.env"
+        assert not envPath.exists()
+
+    def test_write_env_file_whitespace_only_skipped(self, tempDir: Path) -> None:
+        """Test that whitespace-only environment name is skipped."""
+        writeEnvFile(tempDir, "   ")
+        
+        envPath = tempDir / "fa.env"
+        assert not envPath.exists()
+
+    def test_write_env_file_strips_whitespace(self, tempDir: Path) -> None:
+        """Test that environment name is stripped."""
+        writeEnvFile(tempDir, "  prod  ")
+        
+        envPath = tempDir / "fa.env"
+        assert envPath.read_text().strip() == "prod"
+
+    def test_read_env_file(self, tempDir: Path) -> None:
+        """Test reading environment file."""
+        envPath = tempDir / "fa.env"
+        envPath.write_text("prod\n")
+        
+        result = readEnvFile(tempDir)
+        assert result == "prod"
+
+    def test_read_env_file_not_exists(self, tempDir: Path) -> None:
+        """Test reading non-existent environment file."""
+        result = readEnvFile(tempDir)
+        assert result is None
+
+    def test_read_env_file_empty_content(self, tempDir: Path) -> None:
+        """Test reading empty environment file returns None."""
+        envPath = tempDir / "fa.env"
+        envPath.write_text("")
+        
+        result = readEnvFile(tempDir)
+        assert result is None
+
+    def test_read_env_file_whitespace_only(self, tempDir: Path) -> None:
+        """Test reading whitespace-only environment file returns None."""
+        envPath = tempDir / "fa.env"
+        envPath.write_text("   \n  ")
+        
+        result = readEnvFile(tempDir)
+        assert result is None
+
+    def test_read_env_file_os_error(self, tempDir: Path) -> None:
+        """Test reading environment file with OSError returns None."""
+        with patch("fastapi_launcher.process.Path.read_text", side_effect=OSError("Permission denied")):
+            # Create the file so exists() returns True
+            envPath = tempDir / "fa.env"
+            envPath.write_text("prod")
+            
+            # Mock the specific path's read_text to raise OSError
+            with patch.object(Path, "read_text", side_effect=OSError("Permission denied")):
+                result = readEnvFile(tempDir)
+                assert result is None
+
+    def test_remove_env_file(self, tempDir: Path) -> None:
+        """Test removing environment file."""
+        envPath = tempDir / "fa.env"
+        envPath.write_text("prod")
+        
+        result = removeEnvFile(tempDir)
+        
+        assert result is True
+        assert not envPath.exists()
+
+    def test_remove_env_file_not_exists(self, tempDir: Path) -> None:
+        """Test removing non-existent environment file."""
+        result = removeEnvFile(tempDir)
         assert result is False
 
 

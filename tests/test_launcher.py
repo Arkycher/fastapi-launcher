@@ -603,3 +603,70 @@ class TestRunGunicorn:
         with patch("fastapi_launcher.launcher.printErrorPanel"):
             with pytest.raises(LaunchError, match="not supported on Windows"):
                 _runGunicorn("main:app", config, pidFile)
+
+
+class TestLaunchConfigErrors:
+    """Tests for launch configuration error handling."""
+
+    def test_launch_config_validation_error(self, tempDir: Path) -> None:
+        """Test launch handles configuration validation errors."""
+        os.chdir(tempDir)
+        
+        # 创建无效配置
+        pyprojectPath = tempDir / "pyproject.toml"
+        pyprojectPath.write_text("""
+[tool.fastapi-launcher]
+port = "not_a_number"
+""")
+        
+        with patch("fastapi_launcher.launcher.printErrorPanel"):
+            with pytest.raises(LaunchError, match="Invalid"):
+                launch()
+
+    def test_launch_server_exception(self, tempDir: Path) -> None:
+        """Test launch handles server exceptions."""
+        os.chdir(tempDir)
+        
+        with patch("fastapi_launcher.launcher.preLaunchChecks") as mockChecks, \
+             patch("fastapi_launcher.launcher.writePidFile"), \
+             patch("fastapi_launcher.launcher.registerSignalHandlers"), \
+             patch("fastapi_launcher.launcher.uvicorn.Server") as mockServer, \
+             patch("fastapi_launcher.launcher.printErrorPanel"):
+            
+            mockChecks.return_value = "main:app"
+            mockServer.return_value.run.side_effect = RuntimeError("Server crashed")
+            
+            config = LauncherConfig(
+                app="main:app",
+                appDir=tempDir,
+                runtimeDir=tempDir / "runtime",
+            )
+            
+            with pytest.raises(LaunchError, match="Server failed"):
+                launch(config=config, showBanner=False)
+
+
+class TestLaunchSafeCwd:
+    """Tests for launch _safeCwd fallback."""
+
+    def test_launch_with_provided_config(self, tempDir: Path) -> None:
+        """Test launch works with provided config."""
+        os.chdir(tempDir)
+        
+        with patch("fastapi_launcher.launcher.preLaunchChecks") as mockChecks, \
+             patch("fastapi_launcher.launcher.writePidFile"), \
+             patch("fastapi_launcher.launcher.registerSignalHandlers"), \
+             patch("fastapi_launcher.launcher._runUvicorn") as mockRunUvicorn:
+            
+            mockChecks.return_value = "main:app"
+            
+            config = LauncherConfig(
+                app="main:app",
+                appDir=tempDir,
+                runtimeDir=tempDir / "runtime",
+            )
+            
+            # 直接传入 config
+            launch(config=config, showBanner=False)
+            
+            mockRunUvicorn.assert_called_once()
