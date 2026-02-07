@@ -1,0 +1,22 @@
+---
+description: 发布流程规则 - 控制何时发布到 PyPI
+globs: ["**/pyproject.toml"]
+alwaysApply: false
+---
+
+# 发布规则
+
+## 自动发布机制
+- push 到 main 且 pyproject.toml 中 version 变化时，CI 自动发布到 PyPI 并创建 GitHub Release
+
+## 必须
+- 需要发布时：更新 pyproject.toml 中的 version 字段
+- 版本号遵循语义化版本：`fix:` → patch, `feat:` → minor, `BREAKING` → major
+- 发布前确保测试通过
+
+## 禁止
+- 禁止手动发布（统一由 CI 处理）
+- 禁止跳过版本号更新直接发布
+
+## 例外
+- 紧急修复可通过 workflow_dispatch 手动触发发布
